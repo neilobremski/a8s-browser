@@ -79,7 +79,7 @@ def _write_snapshot(seat, run, label="snapshot"):
 
 
 def _seconds(value):
-    """p0o's convention: anything over 300 is milliseconds, not a long nap."""
+    """Anything over 300 is milliseconds, not a long nap."""
     number = float(value)
     if number > MAX_WAIT:
         number = number / 1000.0

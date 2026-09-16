@@ -13,7 +13,7 @@ def _stub_browser(monkeypatch, tmp_path, **overrides):
 
 
 def test_comments_blanks_and_attachment_lines_are_not_commands():
-    body = "# a comment\n\nurl\nATTACHED FILE: p0o.zip\ngo https://example.com\n"
+    body = "# a comment\n\nurl\nATTACHED FILE: notes.zip\ngo https://example.com\n"
     assert commands.script_lines(body) == ["url", "go https://example.com"]
 
 

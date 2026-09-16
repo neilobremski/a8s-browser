@@ -6,8 +6,6 @@ classifies the argument, and when it is text rather than a selector it returns
 the matching elements, each with the simplest selector that uniquely identifies
 it, so an ambiguous instruction comes back as a list to choose from instead of
 a guess.
-
-Lifted from p0o's `ui` layer, where it replaced selector-guessing.
 """
 from plc import BrowserError, evaluate_json, js_string
 
