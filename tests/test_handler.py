@@ -4,14 +4,23 @@ import handler
 
 def test_an_empty_allowlist_accepts_nobody(monkeypatch):
     monkeypatch.delenv("A8S_BROWSER_ALLOW", raising=False)
-    assert not handler.allowed("dresden")
+    assert not handler.allowed("dresden", "")
 
 
 def test_the_allowlist_is_case_insensitive(monkeypatch):
-    monkeypatch.setenv("A8S_BROWSER_ALLOW", "Dresden, gropple")
-    assert handler.allowed("dresden")
-    assert handler.allowed("GROPPLE")
-    assert not handler.allowed("stranger")
+    assert handler.allowed("dresden", "Dresden, gropple")
+    assert handler.allowed("GROPPLE", "Dresden, gropple")
+    assert not handler.allowed("stranger", "Dresden, gropple")
+
+
+def test_the_argv_allowlist_overrides_the_environment(monkeypatch):
+    monkeypatch.setenv("A8S_BROWSER_ALLOW", "gropple")
+    sent = []
+    monkeypatch.setattr(handler, "_tell", lambda *args: sent.append(args))
+    run = commands.Run("garmin")
+    monkeypatch.setattr(commands, "run_script", lambda *a, **k: run)
+    assert handler.handle("garmin", "dresden", "url", allow="dresden") == 0
+    assert handler.handle("garmin", "gropple", "url", allow="dresden") == 1
 
 
 def test_a_stranger_is_told_no_and_the_browser_is_never_touched(monkeypatch):
@@ -50,6 +59,20 @@ def test_a_failed_run_exits_nonzero_so_a8s_sees_it(monkeypatch):
     monkeypatch.setattr(commands, "run_script", lambda *a, **k: run)
     monkeypatch.setattr(handler, "_tell", lambda *args: None)
     assert handler.handle("garmin", "dresden", "click Submit") == 1
+
+
+def test_allow_eval_arg_overrides_the_environment(monkeypatch):
+    monkeypatch.setenv("A8S_BROWSER_ALLOW", "dresden")
+    monkeypatch.delenv("A8S_BROWSER_ALLOW_EVAL", raising=False)
+    seen = []
+    monkeypatch.setattr(
+        commands, "run_script",
+        lambda seat, body, allow_eval=False: seen.append(allow_eval) or commands.Run(seat),
+    )
+    monkeypatch.setattr(handler, "_tell", lambda *args: None)
+    handler.handle("garmin", "dresden", "url", allow_eval="1")
+    handler.handle("garmin", "dresden", "url", allow_eval="0")
+    assert seen == [True, False]
 
 
 def pytest_fail(message):

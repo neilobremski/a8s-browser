@@ -120,8 +120,19 @@ def result_of(output):
     return body
 
 
+def result_or(output):
+    """The '### Result' body when there is one, else the output itself."""
+    body = _section(output, "Result")
+    return body if body is not None else output.strip()
+
+
 def sessions():
-    """Names of the live playwright-cli sessions."""
+    """Names of the live playwright-cli sessions.
+
+    `list` prints top-level sessions as `- name:` and nests their details
+    underneath — an indented `- status: open` is a field, not a session, so
+    only column-zero entries count.
+    """
     if shutil.which("playwright-cli") is None:
         return []
     try:
@@ -132,7 +143,6 @@ def sessions():
         return []
     names = []
     for line in result.stdout.splitlines():
-        line = line.strip()
         if line.startswith("- ") and ":" in line:
             names.append(line[2:].split(":", 1)[0].strip())
     return names

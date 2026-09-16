@@ -82,6 +82,95 @@ def test_long_waits_are_capped(monkeypatch, tmp_path):
     assert slept == [9.0]
 
 
+def test_console_attaches_the_log_and_echoes_it(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        plc, "run",
+        lambda *a, **k: "### Result\nTotal messages: 1\n\n[ERROR] boom @ :0\n",
+    )
+    run = commands.run_script("seat", "console")
+    assert run.ok
+    assert run.files and run.files[0].endswith("-console.log")
+    assert "[ERROR] boom" in open(run.files[0]).read()
+    assert "[ERROR] boom" in run.steps[0]["output"]
+
+
+def test_console_passes_a_minimum_level_through(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(plc, "run", lambda *a, **k: calls.append(a) or "### Result\nok\n")
+    run = commands.run_script("seat", "console warning")
+    assert run.ok
+    assert calls[0] == ("seat", "console", "warning")
+
+
+def test_video_records_a_round_trip(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(seat, *args, **kwargs):
+        calls.append(args)
+        if args[0] == "video-stop":
+            with open(commands.session.video_state("seat")["path"], "w") as handle:
+                handle.write("webm")
+        return "### Result\nok\n"
+
+    monkeypatch.setattr(plc, "run", fake_run)
+    run = commands.run_script("seat", "video-start trip\nvideo-chapter leg one\nvideo-stop\n")
+    assert run.ok
+    assert calls[0][0] == "video-start" and calls[0][1].endswith("-trip.webm")
+    assert calls[1] == ("video-chapter", "leg one")
+    assert calls[2] == ("video-stop",)
+    assert run.files and run.files[0].endswith("-trip.webm")
+    assert commands.session.video_state("seat") is None
+
+
+def test_video_start_refuses_a_second_recording(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    commands.session.save_video_state(
+        "seat", {"path": "/tmp/active.webm", "started_at": 0, "chapters": 0}
+    )
+    run = commands.run_script("seat", "video-start")
+    assert not run.ok
+    assert "already recording" in run.error
+
+
+def test_video_stop_without_a_recording_is_an_error(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    run = commands.run_script("seat", "video-stop")
+    assert not run.ok
+    assert "no recording in progress" in run.error
+
+
+def test_video_stop_rejects_an_empty_recording(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    empty = str(tmp_path / "empty.webm")
+    _touch(empty)
+    commands.session.save_video_state(
+        "seat", {"path": empty, "started_at": 0, "chapters": 0}
+    )
+    monkeypatch.setattr(plc, "run", lambda *a, **k: "### Result\nok\n")
+    run = commands.run_script("seat", "video-stop")
+    assert not run.ok
+    assert "is empty" in run.error
+    assert commands.session.video_state("seat") is None
+
+
+def test_video_stop_does_not_open_the_browser(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        commands.session, "ensure_running",
+        lambda seat: pytest_fail("video-stop opened the browser"),
+    )
+    run = commands.run_script("seat", "video-stop")
+    assert not run.ok
+    assert "no recording in progress" in run.error
+
+
+def pytest_fail(message):
+    raise AssertionError(message)
+
+
 def _touch(path):
     open(path, "w").close()
     return path

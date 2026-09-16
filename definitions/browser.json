@@ -1,16 +1,14 @@
 {
-  "description": "Browser seat: each tell is a command script run in this seat's persistent Chrome profile, and the reply carries the transcript plus any snapshot or screenshot. Register with the launcher path and an allowlist, e.g. `a8s add garmin ~/browsers/garmin browser --A8S_BROWSER=/path/to/a8s-browser`; the sender allowlist and the eval opt-in come from definition.env.",
+  "description": "Browser seat: each tell is a command script run in this seat's persistent Chrome profile, and the reply carries the transcript plus any snapshot, screenshot, console log, or video. Register with the launcher path and an allowlist as per-node vars, e.g. `a8s add garmin ~/browsers/garmin browser --A8S_BROWSER=/path/to/a8s-browser --A8S_BROWSER_ALLOW=dresden` — an unset allowlist means the seat refuses everyone. `a8s vars <seat> set A8S_BROWSER_ALLOW_EVAL 1` opts a seat into eval.",
   "invoke": [
     "$A8S_BROWSER",
     "--seat", "$RECIPIENT",
     "handle",
     "--from", "$SENDER",
-    "--message", "$MESSAGE"
+    "--message", "$MESSAGE",
+    "--allow=$A8S_BROWSER_ALLOW?",
+    "--allow-eval=$A8S_BROWSER_ALLOW_EVAL?"
   ],
-  "env": {
-    "A8S_BROWSER_ALLOW": "",
-    "A8S_BROWSER_ALLOW_EVAL": "0"
-  },
   "max_wake_seconds": 600,
   "idle": { "timeout": 0 }
 }

@@ -19,6 +19,16 @@ import session
 
 MAX_WAIT = 300.0
 
+# Verbs that must not auto-open the browser: `close` is the whole point, and
+# `video-stop` needs to report a stale recording rather than launch Chrome to
+# discover one.
+NO_ENSURE = {"close", "video-stop"}
+
+# Verbs whose argument is the rest of the line verbatim, not shlex words:
+# `eval console.log('x')` must keep its quotes, and `type don't` must not die
+# on an unbalanced apostrophe.
+RAW_ARGS = {"eval", "type", "find", "assert-text", "video-chapter", "dialog-accept"}
+
 
 class Run:
     """The transcript of one script: what each step did, and what it produced."""
@@ -137,7 +147,7 @@ def _wait_for_url(seat, args):
 
 def _assert_text(seat, args):
     _need(args, 1, "assert-text <text>")
-    wanted = " ".join(args)
+    wanted = args[0]
     found = plc.evaluate_json(
         seat, f"(document.body?.innerText || '').includes('{plc.js_string(wanted)}')"
     )
@@ -152,6 +162,63 @@ def _assert_url(seat, args):
     if args[0] not in url:
         raise plc.BrowserError(f"assert-url: at {url}")
     return url
+
+
+def _console(seat, args, run):
+    """Attach the page's console log; the transcript keeps a copy inline."""
+    argv = ["console"] + args[:1]
+    body = plc.result_or(plc.run(seat, *argv))
+    path = artifact(seat, "console.log")
+    with open(path, "w") as handle:
+        handle.write(body + "\n")
+    run.attach(path)
+    return body or "(console is empty)"
+
+
+def _video_start(seat, args):
+    active = session.video_state(seat)
+    if active:
+        raise plc.BrowserError(f"video-start: already recording {active['path']}")
+    slug = "-".join(args) if args else "recording"
+    path = artifact(seat, f"{slug}.webm")
+    plc.run(seat, "video-start", path, "--size", "1280x1024")
+    session.save_video_state(
+        seat, {"path": path, "started_at": time.time(), "chapters": 0}
+    )
+    return path
+
+
+def _video_stop(seat, args, run):
+    state = session.video_state(seat)
+    if not state:
+        raise plc.BrowserError("video-stop: no recording in progress")
+    try:
+        output = plc.run(seat, "video-stop", timeout=60)
+    finally:
+        # Stopped or not, the recording is gone once the call returns —
+        # a lost session must not leave the seat looking busy forever.
+        session.clear_video_state(seat)
+    if "no videos were recorded" in output.lower():
+        raise plc.BrowserError(f"video-stop: playwright-cli recorded nothing: {output.strip()}")
+    path = state["path"]
+    if not os.path.exists(path):
+        raise plc.BrowserError(f"video-stop: no file written at {path}")
+    if os.path.getsize(path) == 0:
+        raise plc.BrowserError(f"video-stop: {path} is empty")
+    run.attach(path)
+    return f"{path} ({state.get('chapters') or 0} chapters)"
+
+
+def _video_chapter(seat, args):
+    _need(args, 1, "video-chapter <title>")
+    state = session.video_state(seat)
+    if not state:
+        raise plc.BrowserError("video-chapter: no recording in progress")
+    title = args[0]
+    plc.run(seat, "video-chapter", title)
+    state["chapters"] = int(state.get("chapters") or 0) + 1
+    session.save_video_state(seat, state)
+    return f"chapter {state['chapters']}: {title}"
 
 
 def _step(seat, verb, args, run, allow_eval):
@@ -177,7 +244,7 @@ def _step(seat, verb, args, run, allow_eval):
         return args[0]
     if verb == "type":
         _need(args, 1, "type <text>")
-        plc.run(seat, "type", " ".join(args))
+        plc.run(seat, "type", args[0])
         return "typed"
     if verb == "text":
         return _text(seat, args)
@@ -193,6 +260,48 @@ def _step(seat, verb, args, run, allow_eval):
         return _assert_text(seat, args)
     if verb == "assert-url":
         return _assert_url(seat, args)
+    if verb == "back":
+        plc.run(seat, "go-back", timeout=60)
+        return session.current_url(seat)
+    if verb == "forward":
+        plc.run(seat, "go-forward", timeout=60)
+        return session.current_url(seat)
+    if verb == "reload":
+        plc.run(seat, "reload", timeout=60)
+        return session.current_url(seat)
+    if verb == "scroll":
+        _need(args, 1, "scroll <dy>")
+        plc.run(seat, "mousewheel", "0", args[0])
+        return args[0]
+    if verb == "find":
+        _need(args, 1, "find <text>")
+        return plc.result_or(plc.run(seat, "find", args[0]))
+    if verb == "select":
+        _need(args, 2, "select <label or selector> <value>")
+        target = resolve.fill_target(seat, args[0])
+        plc.run(seat, "select", target, " ".join(args[1:]))
+        return target
+    if verb in ("check", "uncheck", "hover"):
+        _need(args, 1, f"{verb} <text or selector>")
+        target = resolve.click_target(seat, " ".join(args))
+        plc.run(seat, verb, target)
+        return target
+    if verb == "dialog-accept":
+        plc.run(seat, "dialog-accept", *args[:1])
+        return "accepted"
+    if verb == "dialog-dismiss":
+        plc.run(seat, "dialog-dismiss")
+        return "dismissed"
+    if verb == "requests":
+        return plc.result_or(plc.run(seat, "requests", timeout=60))
+    if verb == "console":
+        return _console(seat, args, run)
+    if verb == "video-start":
+        return _video_start(seat, args)
+    if verb == "video-stop":
+        return _video_stop(seat, args, run)
+    if verb == "video-chapter":
+        return _video_chapter(seat, args)
     if verb == "snap":
         return _write_snapshot(seat, run)
     if verb == "shot":
@@ -203,7 +312,7 @@ def _step(seat, verb, args, run, allow_eval):
         if not allow_eval:
             raise plc.BrowserError("eval refused: this seat has not opted in (A8S_BROWSER_ALLOW_EVAL)")
         _need(args, 1, "eval <expression>")
-        return plc.evaluate(seat, " ".join(args), timeout=60)
+        return plc.evaluate(seat, args[0], timeout=60)
     raise plc.BrowserError(f"unknown command: {verb}")
 
 
@@ -212,7 +321,9 @@ def script_lines(body):
     lines = []
     for raw in body.splitlines():
         line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("ATTACHED FILE:"):
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("ATTACHED FILE:", "ATTACHMENT UNAVAILABLE:")):
             continue
         lines.append(line)
     return lines
@@ -220,18 +331,24 @@ def script_lines(body):
 
 def run_script(seat, body, allow_eval=False):
     run = Run(seat)
+    session.prune_scratch(seat)
     for line in script_lines(body):
+        verb = line.split(None, 1)[0]
+        if verb in RAW_ARGS:
+            args = line.split(None, 1)[1:]
+        else:
+            try:
+                words = shlex.split(line)
+            except ValueError as exc:
+                run.fail(line, f"unparseable: {exc}")
+                break
+            if not words:
+                continue
+            verb, args = words[0], words[1:]
         try:
-            words = shlex.split(line)
-        except ValueError as exc:
-            run.fail(line, f"unparseable: {exc}")
-            break
-        if not words:
-            continue
-        try:
-            if words[0] != "close":
+            if verb not in NO_ENSURE:
                 session.ensure_running(seat)
-            output = _step(seat, words[0], words[1:], run, allow_eval)
+            output = _step(seat, verb, args, run, allow_eval)
             run.note(line, str(output or ""))
         except plc.BrowserError as exc:
             run.fail(line, str(exc))

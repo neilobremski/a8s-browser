@@ -42,9 +42,22 @@ def test_sessions_parses_the_list_output(monkeypatch):
     monkeypatch.setattr(plc.shutil, "which", lambda name: "/usr/bin/playwright-cli")
     monkeypatch.setattr(
         plc.subprocess, "run",
-        lambda *a, **k: _Completed(0, "Sessions:\n- garmin: chrome\n- work: chrome\n"),
+        lambda *a, **k: _Completed(0, (
+            "### Browsers\n"
+            "- garmin:\n"
+            "  - status: open\n"
+            "  - browser-type: chrome (attached)\n"
+            "- work:\n"
+            "  - status: open\n"
+            "  - browser-type: chrome (attached)\n"
+        )),
     )
     assert plc.sessions() == ["garmin", "work"]
+
+
+def test_result_or_falls_back_to_the_raw_output():
+    assert plc.result_or("### Result\nbody\n") == "body"
+    assert plc.result_or("plain output\n") == "plain output"
 
 
 def test_screenshot_rejects_a_success_that_wrote_no_file(monkeypatch, tmp_path):

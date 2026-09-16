@@ -48,6 +48,7 @@ def main():
     sub.add_parser("close", help="save state and quit Chrome")
     sub.add_parser("status", help="report whether the session is attached, and where it is")
     sub.add_parser("snap", help="print the page accessibility snapshot")
+    sub.add_parser("console", help="print the page console log")
     sub.add_parser("doctor", help="check that this box has what a seat needs")
 
     parser_go = sub.add_parser("go", help="navigate to a URL")
@@ -60,6 +61,16 @@ def main():
     parser_handle = sub.add_parser("handle", help="a8s wake entry point")
     parser_handle.add_argument("--from", dest="sender", required=True)
     parser_handle.add_argument("--message", required=True)
+    parser_handle.add_argument(
+        "--allow",
+        help="comma-separated senders this seat answers; overrides A8S_BROWSER_ALLOW",
+    )
+    parser_handle.add_argument(
+        "--allow-eval",
+        nargs="?",
+        const="1",
+        help="permit `eval` on this seat; overrides A8S_BROWSER_ALLOW_EVAL",
+    )
 
     args = parser.parse_args()
     if not args.command:
@@ -70,8 +81,16 @@ def main():
         return doctor.report()
 
     seat = _seat(args)
+    # A relative script path must resolve before the seat's scratch dir becomes
+    # the cwd; everything playwright-cli drops then lands under the seat.
+    if args.command == "do" and args.script != "-":
+        args.script = os.path.abspath(args.script)
+    os.chdir(session.scratch_dir(seat))
     if args.command == "handle":
-        return handler.handle(seat, args.sender, args.message)
+        return handler.handle(
+            seat, args.sender, args.message,
+            allow=args.allow, allow_eval=args.allow_eval,
+        )
     if args.command == "do":
         return _do(seat, args)
 
@@ -87,6 +106,9 @@ def main():
         elif args.command == "snap":
             session.ensure_running(seat)
             print(session.snapshot(seat))
+        elif args.command == "console":
+            session.ensure_running(seat)
+            print(plc.result_or(plc.run(seat, "console")))
         elif args.command == "go":
             session.ensure_running(seat)
             plc.run(seat, "goto", args.url, timeout=60)

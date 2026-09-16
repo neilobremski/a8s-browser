@@ -47,9 +47,9 @@ main() {
   "$DIR/a8s-browser" doctor || true
   echo
   echo "Register a seat (one per browser profile):"
-  echo "  a8s add <seat> <seat-dir> $DIR/definitions/browser.json"
-  echo "then set A8S_BROWSER_ALLOW in that seat's definition.env to the"
-  echo "senders allowed to drive it — an empty allowlist accepts nobody."
+  echo "  a8s add <seat> <seat-dir> $DIR/definitions/browser.json \\"
+  echo "    --A8S_BROWSER=$DIR/a8s-browser --A8S_BROWSER_ALLOW=<sender>"
+  echo "The allowlist is a per-node a8s var — unset, the seat refuses everyone."
 }
 
 _add_to_rc() {
