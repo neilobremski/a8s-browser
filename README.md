@@ -197,6 +197,13 @@ tests/run
 Builds a venv at `tests/.venv` and runs pytest in it; arguments pass through.
 The suite stubs playwright-cli, so it needs no browser.
 
+## Development
+
+Work on a branch and open a PR — nothing commits to `main` directly. Every
+merge bumps `VERSION` (patch minimum; CI fails a PR that doesn't) and cuts the
+`v<VERSION>` tag and release. PR diffs and the whole tracked tree are scanned
+for PII — see `.github/pii-patterns.example.txt` for local setup.
+
 ## Origin
 
 The session layer began as `b3t` in [neilobremski/bin](https://github.com/neilobremski/bin),
