@@ -171,6 +171,41 @@ def _main_pids(seat):
     return result.stdout.split()
 
 
+def _daemon_pids(seat):
+    """playwright-cli's per-seat daemon; a broken one can outlive its browser."""
+    if platform.system() == "Windows":
+        return []
+    result = subprocess.run(
+        ["pgrep", "-f", f"cliDaemon.js {re.escape(seat)}([[:space:]]|$)"],
+        capture_output=True, text=True,
+    )
+    return result.stdout.split()
+
+
+def _signal(pid, sig):
+    try:
+        os.kill(int(pid), sig)
+    except (ProcessLookupError, PermissionError, ValueError):
+        pass
+
+
+def _terminate_profile(seat):
+    """Nothing the seat owns gets to stay: SIGTERM the browser process, wait,
+    then SIGKILL whatever is still holding the profile, and stop the seat's
+    playwright daemon. A wedged Chrome is how a stray dock icon outlives its
+    seat — SIGTERM alone can stall behind a busy or dialog-blocked browser."""
+    for pid in _main_pids(seat):
+        _signal(pid, signal.SIGTERM)
+    for _ in range(20):
+        if not _profile_pids(seat):
+            break
+        time.sleep(0.25)
+    for pid in _profile_pids(seat):
+        _signal(pid, signal.SIGKILL)
+    for pid in _daemon_pids(seat):
+        _signal(pid, signal.SIGTERM)
+
+
 def _launch_chrome(seat):
     binary = chrome_path()
     if not binary:
@@ -200,9 +235,16 @@ def open_browser(seat):
             _launch_chrome(seat)
         base = _wait_for_cdp(seat)
     if not base:
+        # A launch that never serves CDP would otherwise leave a browser
+        # nobody can drive — and an icon nobody can quit — running forever.
+        _terminate_profile(seat)
         raise plc.BrowserError(f"Chrome for seat {seat!r} did not come up on port {cdp_port(seat)}")
 
-    plc.run(seat, "attach", f"--cdp={base}", timeout=15)
+    try:
+        plc.run(seat, "attach", f"--cdp={base}", timeout=15)
+    except plc.BrowserError:
+        _terminate_profile(seat)
+        raise
 
 
 def _salvage_recording(seat):
@@ -218,7 +260,16 @@ def _salvage_recording(seat):
 
 def close_browser(seat):
     if plc.is_open(seat):
-        save_state(seat)
+        try:
+            # A modal dialog can keep a graceful quit — and even state-save —
+            # from ever completing; clear one before anything else.
+            plc.run(seat, "dialog-dismiss", timeout=5)
+        except plc.BrowserError:
+            pass
+        try:
+            save_state(seat)
+        except plc.BrowserError:
+            pass
         _salvage_recording(seat)
         try:
             # Browser.close over CDP quits exactly this Chrome instance with a
@@ -239,11 +290,7 @@ def close_browser(seat):
         except plc.BrowserError:
             pass
 
-    for pid in _main_pids(seat):
-        try:
-            os.kill(int(pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, ValueError):
-            pass
+    _terminate_profile(seat)
 
     for _ in range(20):
         if not cdp_base(seat):

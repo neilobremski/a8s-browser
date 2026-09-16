@@ -81,6 +81,12 @@ Everything a seat owns is keyed by its name — profile directory, CDP port
 They live under `${XDG_DATA_HOME:-~/.local/share}/a8s-browser`, away from the
 install directory an update overwrites; `A8S_BROWSER_HOME` moves them.
 
+`a8s-browser -s <seat> close` always reaps the seat: a clean `Browser.close`
+over CDP first, then SIGTERM/SIGKILL on the profile's own processes and the
+seat's playwright daemon. A seat never leaves a stray Chrome in the dock —
+including a browser wedged behind a modal dialog or one whose playwright
+session has already died.
+
 ## Command vocabulary
 
 One command per line. A run stops at the first failure and attaches a snapshot
