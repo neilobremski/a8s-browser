@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- README documents the development workflow: branch + PR, every merge bumps VERSION, PII gates on diff and tree.
+
 ## 0.1.0
 
 First working release.
