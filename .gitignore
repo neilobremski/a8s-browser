@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.playwright-cli/
+.github/pii-patterns.local.txt
