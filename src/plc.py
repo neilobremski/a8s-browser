@@ -170,8 +170,12 @@ def evaluate_json(seat, expression, timeout=30):
 
 
 def run_code(seat, body, timeout=60):
-    """Execute a statement body with the Playwright `page` in scope."""
-    return run(seat, "run-code", f"async function f(page) {{ {body} }}", timeout=timeout)
+    """Execute a statement body with the Playwright `page` in scope.
+
+    The body gets lines of its own: a multi-line body whose last line is a
+    `//` comment would otherwise swallow the closing brace.
+    """
+    return run(seat, "run-code", f"async function f(page) {{\n{body}\n}}", timeout=timeout)
 
 
 def screenshot(seat, path, timeout=60):

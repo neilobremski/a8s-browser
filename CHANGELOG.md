@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- `run-code`: Playwright statements with `page` in scope, for pages the DOM cannot drive — a menu that ignores a synthetic click, a file chooser, a driver-level wait. It is gated on the same `A8S_BROWSER_ALLOW_EVAL` opt-in as `eval`, because it is the same class of capability and strictly more of it.
+- Heredoc blocks in the script language: a command line ending in `<<MARKER` takes the following lines as its argument, verbatim, up to a line reading just `MARKER`. Nothing inside is interpreted — `#` lines, blank lines, indentation and words that look like other verbs are all body text. A block nobody closed fails the script naming the marker, and runs none of it. The form works for any verb that takes the rest of its line verbatim.
+
 ## 0.1.2
 
 - Ruff lint gate: `ruff.toml` (select E, F, W, I, B, UP, RUF; line-length 100), `tools/lint` as the local runner, and a `lint` job in both the PR workflow and the release gate. `src/resolve.py` is exempt from E501 because it carries large embedded JavaScript that a Python line-length rule would only mangle. `ruff format` is not adopted — reformatting all 15 files would bury this change.

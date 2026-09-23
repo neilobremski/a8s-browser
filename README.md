@@ -110,13 +110,33 @@ of the page it died on.
 | `requests` | list the page's network requests |
 | `video-start [name]` / `video-chapter <title>` / `video-stop` | record a .webm of the run; `stop` attaches it |
 | `open` / `close` / `save` | session lifecycle |
-| `eval <js>` | arbitrary JavaScript — refused unless the seat opts in |
+| `eval <js>` | arbitrary JavaScript in the page — refused unless the seat opts in |
+| `run-code <<END … END` | Playwright statements with `page` in scope — same opt-in |
 
 `click`, `fill`, `select`, `check`, `uncheck` and `hover` take a CSS selector
 or the element's visible text/label — quote a multi-word label
-(`fill "Full name" Neil`). `eval`, `type`, `find`, `assert-text`,
+(`fill "Full name" Ada`). `eval`, `run-code`, `type`, `find`, `assert-text`,
 `dialog-accept` and `video-chapter` take the rest of the line verbatim, so
 `eval console.log('x')` and `video-chapter it's done` need no quoting.
+
+`eval` sees the DOM; `run-code` sees the driver. Some pages answer only the
+driver — a menu that ignores a synthetic click, a file chooser, a wait that
+belongs to Playwright rather than the page — and `run-code` is the door to it.
+Its body is statements with `page` in scope, and what it returns is what the
+transcript reports. It runs behind the same opt-in as `eval`, because it is the
+same capability and more of it.
+
+A command whose argument is too long for a line ends in `<<MARKER`, and the
+lines up to one that reads just `MARKER` are the argument, taken verbatim —
+`#`, blank lines and indentation included:
+
+```
+run-code <<END
+const menu = page.locator('button[aria-label="Upload & tools"]').first();
+await menu.click();
+return 'clicked';
+END
+```
 
 `video-start` begins a recording that survives across tells until
 `video-stop` flushes and attaches the file — record a long flow over several
@@ -141,8 +161,9 @@ remote asserts its own name — so the allowlist is a filter, not proof of
 identity, and the broker's own access control is what keeps strangers off the
 topic.
 
-**`eval` is off.** It is arbitrary code on the machine holding the profile.
-Turn it on per seat with `a8s vars garmin set A8S_BROWSER_ALLOW_EVAL 1`.
+**`eval` and `run-code` are off.** Both are arbitrary code on the machine
+holding the profile, so both wait on one opt-in — turn it on per seat with
+`a8s vars garmin set A8S_BROWSER_ALLOW_EVAL 1`.
 
 Credentials live on the seat's machine and never travel in a tell. Log the
 profile in once by hand; it stays logged in.
@@ -170,7 +191,7 @@ file — per-seat settings go through a8s vars, not edits to that file:
 
 ```bash
 a8s vars garmin set A8S_BROWSER_ALLOW iris,codex   # who may drive it
-a8s vars garmin set A8S_BROWSER_ALLOW_EVAL 1            # permit `eval`
+a8s vars garmin set A8S_BROWSER_ALLOW_EVAL 1      # permit `eval` and `run-code`
 a8s vars garmin                                          # show what's set
 ```
 
