@@ -251,7 +251,7 @@ def _run_code(seat, args, allow_eval):
     _need(args, 1, "run-code <<END ... END")
     # A body is free to return nothing, so report a result when there is one
     # rather than insisting the driver produced one.
-    return plc.result_or(plc.run_code(seat, "\n".join(args), timeout=60))
+    return plc.result_or(plc.run_code(seat, args[0], timeout=60))
 
 
 def _step(seat, verb, args, run, allow_eval):
@@ -363,6 +363,10 @@ def script_commands(body):
     kept. A `#` inside a block is body text, and so is a line that reads like
     a verb.
 
+    A line that opens a block carries nothing but the verb: the block is the
+    whole argument. One rule for every verb, so no verb can quietly drop half
+    of what the sender wrote and report success.
+
     The form belongs to the parser, not to one verb: it is how any verb in
     RAW_ARGS takes an argument too long for a line. `run-code` is what it
     exists for, because a useful Playwright body is never one line.
@@ -378,9 +382,16 @@ def script_commands(body):
         if line.startswith(("ATTACHED FILE:", "ATTACHMENT UNAVAILABLE:")):
             continue
         opener = HEREDOC.match(line)
-        if not opener or not opener.group("command").strip():
+        command = opener.group("command").strip() if opener else ""
+        if not command:
             parsed.append((line, None))
             continue
+        if len(command.split()) > 1:
+            raise ScriptError(
+                line,
+                "a line that opens a block cannot also carry an inline argument: "
+                f"{line}",
+            )
         marker = opener.group("marker")
         block = []
         for raw in lines[index:]:
@@ -390,7 +401,7 @@ def script_commands(body):
             block.append(raw)
         else:
             raise ScriptError(line, f"unterminated <<{marker}: no line reads {marker}")
-        parsed.append((opener.group("command").strip(), "\n".join(block)))
+        parsed.append((command, "\n".join(block)))
     return parsed
 
 
@@ -418,7 +429,9 @@ def run_script(seat, body, allow_eval=False):
                 continue
             verb, args = words[0], words[1:]
         if block is not None:
-            args = [*args, block]
+            # The opener carried no other argument — the parser refuses one —
+            # so the block is the command's whole argument, for every verb.
+            args = [block]
         try:
             if verb not in NO_ENSURE:
                 session.ensure_running(seat)

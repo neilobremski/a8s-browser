@@ -170,6 +170,33 @@ def test_a_block_feeds_any_verb_that_takes_the_rest_of_the_line(monkeypatch, tmp
     assert calls[0] == ("seat", "type", "line one\n  line two")
 
 
+def test_an_opener_that_also_carries_an_argument_is_refused(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        plc, "run", lambda *a, **k: pytest_fail("a truncated argument reached playwright")
+    )
+    run = commands.run_script("seat", "type Dear team <<TEXT\nand the rest\nTEXT\n")
+    assert not run.ok
+    assert run.error == (
+        "a line that opens a block cannot also carry an inline argument: "
+        "type Dear team <<TEXT"
+    )
+    assert [step["command"] for step in run.steps] == ["type Dear team <<TEXT"]
+
+
+def test_run_code_keeps_no_exception_to_the_opener_rule(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        plc, "run_code", lambda *a, **k: pytest_fail("a truncated body reached playwright")
+    )
+    run = commands.run_script(
+        "seat", "run-code some.js() <<END\nreturn 1;\nEND\n", allow_eval=True
+    )
+    assert not run.ok
+    assert "cannot also carry an inline argument" in run.error
+    assert [step["command"] for step in run.steps] == ["run-code some.js() <<END"]
+
+
 def test_go_refuses_anything_that_is_not_a_url(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     run = commands.run_script("seat", "go example.com")

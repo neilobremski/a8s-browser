@@ -174,6 +174,10 @@ def run_code(seat, body, timeout=60):
 
     The body gets lines of its own: a multi-line body whose last line is a
     `//` comment would otherwise swallow the closing brace.
+
+    The wrapper is a convenience, not a sandbox — a body can close the
+    function and keep writing, and running arbitrary code is the point of the
+    verb. The seat's opt-in is the boundary; nothing here contains anything.
     """
     return run(seat, "run-code", f"async function f(page) {{\n{body}\n}}", timeout=timeout)
 

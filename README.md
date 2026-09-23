@@ -128,7 +128,8 @@ same capability and more of it.
 
 A command whose argument is too long for a line ends in `<<MARKER`, and the
 lines up to one that reads just `MARKER` are the argument, taken verbatim —
-`#`, blank lines and indentation included:
+`#`, blank lines and indentation included. The opening line carries nothing
+else, because the block is the whole argument:
 
 ```
 run-code <<END
