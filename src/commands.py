@@ -128,7 +128,8 @@ def _wait_for(seat, args):
     selector = plc.js_string(args[0])
     plc.run_code(
         seat,
-        f"await page.waitForSelector('{selector}', {{state: 'visible', timeout: {int(timeout * 1000)}}});",
+        f"await page.waitForSelector('{selector}', "
+        f"{{state: 'visible', timeout: {int(timeout * 1000)}}});",
         timeout=timeout + 10,
     )
     return f"visible: {args[0]}"
@@ -166,7 +167,7 @@ def _assert_url(seat, args):
 
 def _console(seat, args, run):
     """Attach the page's console log; the transcript keeps a copy inline."""
-    argv = ["console"] + args[:1]
+    argv = ["console", *args[:1]]
     body = plc.result_or(plc.run(seat, *argv))
     path = artifact(seat, "console.log")
     with open(path, "w") as handle:
@@ -310,7 +311,9 @@ def _step(seat, verb, args, run, allow_eval):
         return path
     if verb == "eval":
         if not allow_eval:
-            raise plc.BrowserError("eval refused: this seat has not opted in (A8S_BROWSER_ALLOW_EVAL)")
+            raise plc.BrowserError(
+                "eval refused: this seat has not opted in (A8S_BROWSER_ALLOW_EVAL)"
+            )
         _need(args, 1, "eval <expression>")
         return plc.evaluate(seat, args[0], timeout=60)
     raise plc.BrowserError(f"unknown command: {verb}")

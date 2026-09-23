@@ -11,8 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".github"))
 
-import pii_check  # noqa: E402
-from pii_check import (  # noqa: E402
+import pii_check
+from pii_check import (
     GitUnavailable,
     NoPatterns,
     check_diff,

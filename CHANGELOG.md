@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Ruff lint gate: `ruff.toml` (select E, F, W, I, B, UP, RUF; line-length 100), `tools/lint` as the local runner, and a `lint` job in both the PR workflow and the release gate. `src/resolve.py` is exempt from E501 because it carries large embedded JavaScript that a Python line-length rule would only mangle. `ruff format` is not adopted — reformatting all 15 files would bury this change.
+
 ## 0.1.1
 
 - README documents the development workflow: branch + PR, every merge bumps VERSION, PII gates on diff and tree.

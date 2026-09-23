@@ -101,9 +101,11 @@ def run(seat, *args, timeout=30):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise BrowserError(f"playwright-cli timed out after {timeout}s")
+        raise BrowserError(f"playwright-cli timed out after {timeout}s") from None
     if result.returncode != 0:
-        raise BrowserError(result.stderr.strip() or result.stdout.strip() or "playwright-cli failed")
+        raise BrowserError(
+            result.stderr.strip() or result.stdout.strip() or "playwright-cli failed"
+        )
     failure = _section(result.stdout, "Error")
     if failure is not None:
         raise BrowserError(failure or "playwright-cli reported an error")
@@ -163,8 +165,8 @@ def evaluate_json(seat, expression, timeout=30):
     except json.JSONDecodeError:
         try:
             return json.loads(payload.encode().decode("unicode_escape"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            raise BrowserError(f"expected JSON from the page, got {payload[:200]!r}")
+        except (json.JSONDecodeError, UnicodeDecodeError) as err:
+            raise BrowserError(f"expected JSON from the page, got {payload[:200]!r}") from err
 
 
 def run_code(seat, body, timeout=60):

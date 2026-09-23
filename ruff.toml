@@ -1,0 +1,9 @@
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+
+[lint.per-file-ignores]
+# Embedded JavaScript strings drive real line length here; reflowing the JS
+# to satisfy E501 would hurt readability for no benefit.
+"src/resolve.py" = ["E501"]

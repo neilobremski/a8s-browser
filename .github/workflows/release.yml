@@ -58,6 +58,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install ruff==0.16.8
+      - run: ruff check src tests --exclude tests/.venv
       - run: pip install pytest
       - run: python -m pytest tests/ -x -q
       # The PR-time pii-check scans the diff, which cannot see PII committed
