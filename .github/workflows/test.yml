@@ -51,6 +51,17 @@ jobs:
           PII_PATTERNS: ${{ secrets.PII_PATTERNS }}
         run: python .github/pii_check.py
 
+  lint:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==$(cat tools/ruff-version.txt)
+      - run: ruff check src tests --exclude tests/.venv
+
   tests:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest

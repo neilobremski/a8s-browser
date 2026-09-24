@@ -6,10 +6,12 @@ message is going to be a correction and the sender needs to see what the
 browser sees.
 
 The vocabulary is fixed on purpose. A seat holds live logins, so a message
-naming a verb is a different thing from a message carrying code: `eval` is the
-one door to arbitrary execution and it stays shut unless the seat opts in.
+naming a verb is a different thing from a message carrying code: `eval` and
+`run-code` are the doors to arbitrary execution and they stay shut behind one
+opt-in unless the seat turns it on.
 """
 import os
+import re
 import shlex
 import time
 
@@ -27,7 +29,21 @@ NO_ENSURE = {"close", "video-stop"}
 # Verbs whose argument is the rest of the line verbatim, not shlex words:
 # `eval console.log('x')` must keep its quotes, and `type don't` must not die
 # on an unbalanced apostrophe.
-RAW_ARGS = {"eval", "type", "find", "assert-text", "video-chapter", "dialog-accept"}
+RAW_ARGS = {
+    "eval", "run-code", "type", "find", "assert-text", "video-chapter", "dialog-accept",
+}
+
+# `<<MARKER` at the end of a command line opens a block; the marker is the last
+# word on the line.
+HEREDOC = re.compile(r"^(?P<command>.*?)\s*<<\s*(?P<marker>\S+)$")
+
+
+class ScriptError(Exception):
+    """A script that cannot be parsed: the line it died on, and why."""
+
+    def __init__(self, line, message):
+        super().__init__(message)
+        self.line = line
 
 
 class Run:
@@ -128,7 +144,8 @@ def _wait_for(seat, args):
     selector = plc.js_string(args[0])
     plc.run_code(
         seat,
-        f"await page.waitForSelector('{selector}', {{state: 'visible', timeout: {int(timeout * 1000)}}});",
+        f"await page.waitForSelector('{selector}', "
+        f"{{state: 'visible', timeout: {int(timeout * 1000)}}});",
         timeout=timeout + 10,
     )
     return f"visible: {args[0]}"
@@ -166,7 +183,7 @@ def _assert_url(seat, args):
 
 def _console(seat, args, run):
     """Attach the page's console log; the transcript keeps a copy inline."""
-    argv = ["console"] + args[:1]
+    argv = ["console", *args[:1]]
     body = plc.result_or(plc.run(seat, *argv))
     path = artifact(seat, "console.log")
     with open(path, "w") as handle:
@@ -219,6 +236,22 @@ def _video_chapter(seat, args):
     state["chapters"] = int(state.get("chapters") or 0) + 1
     session.save_video_state(seat, state)
     return f"chapter {state['chapters']}: {title}"
+
+
+def _run_code(seat, args, allow_eval):
+    """Playwright statements with `page` in scope — the driver, not the DOM.
+
+    Behind the same opt-in as `eval` on purpose: this is the same class of
+    capability and strictly more of it, so it must not be the easier door.
+    """
+    if not allow_eval:
+        raise plc.BrowserError(
+            "run-code refused: this seat has not opted in (A8S_BROWSER_ALLOW_EVAL)"
+        )
+    _need(args, 1, "run-code <<END ... END")
+    # A body is free to return nothing, so report a result when there is one
+    # rather than insisting the driver produced one.
+    return plc.result_or(plc.run_code(seat, args[0], timeout=60))
 
 
 def _step(seat, verb, args, run, allow_eval):
@@ -310,29 +343,79 @@ def _step(seat, verb, args, run, allow_eval):
         return path
     if verb == "eval":
         if not allow_eval:
-            raise plc.BrowserError("eval refused: this seat has not opted in (A8S_BROWSER_ALLOW_EVAL)")
+            raise plc.BrowserError(
+                "eval refused: this seat has not opted in (A8S_BROWSER_ALLOW_EVAL)"
+            )
         _need(args, 1, "eval <expression>")
         return plc.evaluate(seat, args[0], timeout=60)
+    if verb == "run-code":
+        return _run_code(seat, args, allow_eval)
     raise plc.BrowserError(f"unknown command: {verb}")
 
 
-def script_lines(body):
-    """Command lines of a message: comments, blanks and a8s attachment lines out."""
-    lines = []
-    for raw in body.splitlines():
-        line = raw.strip()
+def script_commands(body):
+    """Commands of a message, each with the block it opened or None.
+
+    Comments, blanks and a8s attachment lines are not commands. A line ending
+    in `<<MARKER` opens a block: the lines after it, up to one whose whole
+    stripped content is MARKER, become that command's last argument, taken
+    verbatim — no comments stripped, no blanks dropped, no quoting, indentation
+    kept. A `#` inside a block is body text, and so is a line that reads like
+    a verb.
+
+    A line that opens a block carries nothing but the verb: the block is the
+    whole argument. One rule for every verb, so no verb can quietly drop half
+    of what the sender wrote and report success.
+
+    The form belongs to the parser, not to one verb: it is how any verb in
+    RAW_ARGS takes an argument too long for a line. `run-code` is what it
+    exists for, because a useful Playwright body is never one line.
+    """
+    parsed = []
+    lines = body.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        index += 1
         if not line or line.startswith("#"):
             continue
         if line.startswith(("ATTACHED FILE:", "ATTACHMENT UNAVAILABLE:")):
             continue
-        lines.append(line)
-    return lines
+        opener = HEREDOC.match(line)
+        command = opener.group("command").strip() if opener else ""
+        if not command:
+            parsed.append((line, None))
+            continue
+        if len(command.split()) > 1:
+            raise ScriptError(
+                line,
+                "a line that opens a block cannot also carry an inline argument: "
+                f"{line}",
+            )
+        marker = opener.group("marker")
+        block = []
+        for raw in lines[index:]:
+            index += 1
+            if raw.strip() == marker:
+                break
+            block.append(raw)
+        else:
+            raise ScriptError(line, f"unterminated <<{marker}: no line reads {marker}")
+        parsed.append((command, "\n".join(block)))
+    return parsed
 
 
 def run_script(seat, body, allow_eval=False):
     run = Run(seat)
     session.prune_scratch(seat)
-    for line in script_lines(body):
+    try:
+        # Parse the whole script before running any of it, so a block nobody
+        # closed cannot run as a truncated body.
+        steps = script_commands(body)
+    except ScriptError as exc:
+        steps = []
+        run.fail(exc.line, str(exc))
+    for line, block in steps:
         verb = line.split(None, 1)[0]
         if verb in RAW_ARGS:
             args = line.split(None, 1)[1:]
@@ -345,6 +428,10 @@ def run_script(seat, body, allow_eval=False):
             if not words:
                 continue
             verb, args = words[0], words[1:]
+        if block is not None:
+            # The opener carried no other argument — the parser refuses one —
+            # so the block is the command's whole argument, for every verb.
+            args = [block]
         try:
             if verb not in NO_ENSURE:
                 session.ensure_running(seat)

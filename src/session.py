@@ -71,7 +71,8 @@ def prune_scratch(seat, max_age=86400):
     for name in names:
         path = os.path.join(directory, name)
         try:
-            if os.path.isfile(path) and not os.path.islink(path) and os.path.getmtime(path) < cutoff:
+            stale = os.path.getmtime(path) < cutoff
+            if os.path.isfile(path) and not os.path.islink(path) and stale:
                 os.remove(path)
         except OSError:
             pass

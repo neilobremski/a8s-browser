@@ -1,5 +1,5 @@
 {
-  "description": "Browser seat: each tell is a command script run in this seat's persistent Chrome profile, and the reply carries the transcript plus any snapshot, screenshot, console log, or video. Register with the launcher path and an allowlist as per-node vars, e.g. `a8s add garmin ~/browsers/garmin browser --A8S_BROWSER=/path/to/a8s-browser --A8S_BROWSER_ALLOW=iris` — an unset allowlist means the seat refuses everyone. `a8s vars <seat> set A8S_BROWSER_ALLOW_EVAL 1` opts a seat into eval.",
+  "description": "Browser seat: each tell is a command script run in this seat's persistent Chrome profile, and the reply carries the transcript plus any snapshot, screenshot, console log, or video. Register with the launcher path and an allowlist as per-node vars, e.g. `a8s add garmin ~/browsers/garmin browser --A8S_BROWSER=/path/to/a8s-browser --A8S_BROWSER_ALLOW=iris` — an unset allowlist means the seat refuses everyone. `a8s vars <seat> set A8S_BROWSER_ALLOW_EVAL 1` opts a seat into `eval` and `run-code`.",
   "invoke": [
     "$A8S_BROWSER",
     "--seat", "$RECIPIENT",

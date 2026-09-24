@@ -69,7 +69,7 @@ def main():
         "--allow-eval",
         nargs="?",
         const="1",
-        help="permit `eval` on this seat; overrides A8S_BROWSER_ALLOW_EVAL",
+        help="permit `eval` and `run-code` on this seat; overrides A8S_BROWSER_ALLOW_EVAL",
     )
 
     args = parser.parse_args()

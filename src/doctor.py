@@ -10,7 +10,9 @@ def _checks():
     chrome = session.chrome_path()
     yield (
         bool(chrome) and os.path.exists(chrome),
-        f"chrome: {chrome}" if chrome else "chrome: not found — install it, or set A8S_BROWSER_CHROME",
+        f"chrome: {chrome}"
+        if chrome
+        else "chrome: not found — install it, or set A8S_BROWSER_CHROME",
     )
     playwright = shutil.which("playwright-cli")
     yield (

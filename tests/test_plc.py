@@ -60,6 +60,16 @@ def test_result_or_falls_back_to_the_raw_output():
     assert plc.result_or("plain output\n") == "plain output"
 
 
+def test_run_code_gives_the_body_lines_of_its_own(monkeypatch):
+    sent = []
+    monkeypatch.setattr(plc, "run", lambda seat, *args, **kwargs: sent.append(args) or "")
+    plc.run_code("seat", "await page.click('#go'); // the last word")
+    assert sent[0] == (
+        "run-code",
+        "async function f(page) {\nawait page.click('#go'); // the last word\n}",
+    )
+
+
 def test_screenshot_rejects_a_success_that_wrote_no_file(monkeypatch, tmp_path):
     monkeypatch.setattr(plc, "run", lambda *a, **k: "### Result\nok\n")
     with pytest.raises(plc.BrowserError, match="wrote no file"):

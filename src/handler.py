@@ -36,7 +36,11 @@ def handle(seat, sender, message, allow=None, allow_eval=None):
         _tell(sender, f"{seat}: refusing — {sender} is not on this seat's allowlist.", [])
         return 1
 
-    eval_flag = allow_eval if allow_eval is not None else os.environ.get("A8S_BROWSER_ALLOW_EVAL", "")
+    eval_flag = (
+        allow_eval
+        if allow_eval is not None
+        else os.environ.get("A8S_BROWSER_ALLOW_EVAL", "")
+    )
     run = commands.run_script(seat, message, allow_eval=_truthy(eval_flag))
 
     verdict = "ok" if run.ok else f"failed: {run.error}"
