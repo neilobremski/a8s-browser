@@ -12,6 +12,15 @@ def test_result_section_unquotes():
     assert plc.result_of("### Result\n'https://example.com'\n") == "https://example.com"
 
 
+def test_a_string_result_is_decoded_once_and_exactly():
+    output = '### Result\n"a\\nb \\"q\\" \\\\n caf\\u00e9"\n'
+    assert plc.result_of(output) == 'a\nb "q" \\n caf\u00e9'
+
+
+def test_a_quoted_result_that_is_not_json_is_only_unquoted():
+    assert plc.result_of('### Result\n"not \\x json"\n') == "not \\x json"
+
+
 def test_missing_result_section_is_an_error():
     with pytest.raises(plc.BrowserError):
         plc.result_of("nothing useful here")

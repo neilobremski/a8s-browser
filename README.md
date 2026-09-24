@@ -87,6 +87,14 @@ seat's playwright daemon. A seat never leaves a stray Chrome in the dock —
 including a browser wedged behind a modal dialog or one whose playwright
 session has already died.
 
+The seat's window can sit behind other windows or be minimised; the page stays
+where it is. Chrome is launched with `--disable-backgrounding-occluded-windows`,
+so a covered page keeps running as a visible one, and a minimised window is
+restored before the next command. A page that still reads hidden — its Chrome
+hidden with Cmd-H — is brought to the front, because a hidden page never
+settles for a click. Chrome is restarted only when the driven page has no
+window at all, and the restart navigates back to the page it was on.
+
 ## Command vocabulary
 
 One command per line. A run stops at the first failure and attaches a snapshot
@@ -126,10 +134,15 @@ driver modal that no page JS can reach — and it takes **one** file, because th
 is what answers a chooser. A chooser is answered once and closes, so a second
 `upload` goes nowhere; several files at a time is `drop`'s job.
 
-`download` clicks its target and attaches whatever came back. playwright-cli saves
-a download itself and names it in an event, so the wait is for that event rather
-than for a file to appear; the bytes are then copied into the run's artifacts,
-because the scratch directory they land in is pruned daily.
+`download` clicks its target and attaches whatever came back, and prints the
+artifact's path. The seat's Chrome saves every download under the seat's own
+`downloads` directory, never the profile default, which is a person's Downloads
+folder. Each `download` points Chrome at a fresh directory of its own before it
+clicks, so a download an earlier call gave up on can never be returned for a
+later one. Chrome writes `<name>.crdownload` while bytes arrive and renames it
+when they are all there, so the wait is for a finished file. That file is then
+moved into the run's artifacts. An artifact never replaces another: two of one
+name in the same second get a counter in the name.
 
 `click`, `fill`, `select`, `check`, `uncheck` and `hover` take a CSS selector
 or the element's visible text/label — quote a multi-word label

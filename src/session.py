@@ -50,6 +50,14 @@ def artifacts_dir(seat):
     return os.path.join(seat_home(seat), "artifacts")
 
 
+def downloads_dir(seat):
+    """Where the seat's Chrome saves downloads — never the profile default,
+    which is a person's own Downloads folder."""
+    path = os.path.join(seat_home(seat), "downloads")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def scratch_dir(seat):
     """The seat's working directory — playwright-cli drops per-command scratch
     (page-*.yml, console-*.log) under a `.playwright-cli` dir beneath its cwd,
@@ -219,10 +227,30 @@ def _launch_chrome(seat):
             f"--remote-debugging-port={cdp_port(seat)}",
             "--no-first-run",
             "--no-default-browser-check",
+            "--disable-backgrounding-occluded-windows",
             "about:blank",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+    )
+
+
+def _route_downloads_js(seat, directory=None):
+    """Page-less JS that points the attached Chrome's downloads at the seat
+    (or at `directory`, one of the seat's own).
+
+    The seat attaches to a Chrome it launched as a person would, so Playwright
+    manages no downloads and Chrome saves to its profile default. The
+    Browser.setDownloadBehavior override lasts only while the CDP session that
+    set it stays attached, so one session is kept on the driver's Browser object
+    for the life of the attach and reused on every call.
+    """
+    return (
+        "const br = page.context().browser();"
+        " if (!br.__a8sDownloads) br.__a8sDownloads = await br.newBrowserCDPSession();"
+        " await br.__a8sDownloads.send('Browser.setDownloadBehavior',"
+        " {behavior: 'allow', downloadPath:"
+        f" '{plc.js_string(directory or downloads_dir(seat))}'}});"
     )
 
 
@@ -246,6 +274,7 @@ def open_browser(seat):
     except plc.BrowserError:
         _terminate_profile(seat)
         raise
+    plc.run_code(seat, _route_downloads_js(seat), timeout=15)
 
 
 def _salvage_recording(seat):
@@ -299,26 +328,92 @@ def close_browser(seat):
         time.sleep(0.25)
 
 
+def _probe_js(seat):
+    """Route downloads, then report the driven page's URL, window and visibility.
+
+    Which window holds the page is asked of CDP. A page no window holds is the
+    genuine zero-window Chrome; visibilityState cannot tell that apart from a
+    window that is merely covered or minimised, which also read "hidden".
+    """
+    return _route_downloads_js(seat) + (
+        " const s = await page.context().newCDPSession(page);"
+        " try {"
+        " let w = null;"
+        " try { w = await s.send('Browser.getWindowForTarget'); }"
+        " catch (e) { if (!/window not found/i.test(e.message)) throw e; }"
+        " const visible = await page.evaluate(() => document.visibilityState);"
+        " return JSON.stringify({url: page.url(), visible,"
+        " window: w && w.windowId, state: w && w.bounds.windowState});"
+        " } finally { await s.detach(); }"
+    )
+
+
+BLANK_URLS = ("", "about:blank")
+
+
+def _window_of_page(seat):
+    return plc.parse_json(plc.result_of(plc.run_code(seat, _probe_js(seat), timeout=15)))
+
+
+def _unminimise(seat, window_id):
+    plc.run_code(
+        seat,
+        "const s = await page.context().newCDPSession(page);"
+        f" try {{ await s.send('Browser.setWindowBounds', {{windowId: {int(window_id)},"
+        " bounds: {windowState: 'normal'}}); } finally { await s.detach(); }",
+        timeout=15,
+    )
+
+
+def _bring_to_front(seat):
+    plc.run_code(
+        seat,
+        "const s = await page.context().newCDPSession(page);"
+        " try { await s.send('Page.bringToFront'); } finally { await s.detach(); }",
+        timeout=15,
+    )
+
+
+def _restart_browser(seat, url):
+    """Cycle Chrome and land back on `url`, so a restart never moves the caller."""
+    close_browser(seat)
+    open_browser(seat)
+    if url not in BLANK_URLS:
+        try:
+            plc.run(seat, "goto", url, timeout=60)
+        except plc.BrowserError as exc:
+            raise plc.BrowserError(
+                f"restarted Chrome but could not return to {url}: {exc}"
+            ) from exc
+
+
 def ensure_running(seat):
-    """Open the browser, cycling it when Chrome has no visible window.
+    """Open the browser, and make sure the driven page is one a click can reach.
 
-    A zero-window Chrome reports visibilityState "hidden": pages still load,
-    but out-of-process iframes take no input and clicks silently no-op.
+    A page no window holds takes no input in its out-of-process iframes —
+    clicks silently no-op — so that Chrome is cycled, and the page it was on
+    is reopened. A minimised window is restored. A window behind other windows
+    is left alone: Chrome is launched with --disable-backgrounding-occluded-windows,
+    so its pages stay visible. A page that still reads hidden in a normal window
+    — its app hidden — is brought to the front, because Playwright waits on
+    animation frames a hidden page never draws.
 
-    A session that is listed but refuses eval is busy, not dead — an open
-    dialog blocks page evaluation — so the probe's failure falls through to
-    the verb, which either handles the modal state or reports the real error.
+    A session that is listed but refuses the probe is busy, not dead — an open
+    dialog blocks the driver — so the failure falls through to the verb, which
+    either handles the modal state or reports the real error.
     """
     if not plc.is_open(seat):
         open_browser(seat)
-        return
     try:
-        visible = plc.evaluate(seat, "document.visibilityState")
+        page = _window_of_page(seat)
     except plc.BrowserError:
         return
-    if visible == "hidden":
-        close_browser(seat)
-        open_browser(seat)
+    if page.get("window") is None:
+        _restart_browser(seat, page.get("url") or "")
+    elif page.get("state") == "minimized":
+        _unminimise(seat, page["window"])
+    elif page.get("visible") == "hidden":
+        _bring_to_front(seat)
 
 
 def save_state(seat):

@@ -1,4 +1,5 @@
 import os
+import re
 
 import commands
 import plc
@@ -446,65 +447,193 @@ def test_drop_needs_a_target_and_a_file(monkeypatch, tmp_path):
     assert "drop <target> <path>" in run.error
 
 
-def _downloaded(name):
-    return f'### Events\n- Downloaded file {name} to ".playwright-cli/{name}"\n'
+class FakeDownloads:
+    """Chrome as the download verb meets it: each download is written into the
+    directory Chrome was last pointed at, and fixed there once it starts."""
+
+    def __init__(self, monkeypatch, seat="seat"):
+        self.routed = commands.session.downloads_dir(seat)
+        self.started = []
+        self.on_click = []
+        monkeypatch.setattr(plc, "run_code", self.run_code)
+        monkeypatch.setattr(plc, "run", self.click)
+
+    def run_code(self, seat, body, timeout=60):
+        match = re.search(r"downloadPath: '([^']*)'", body)
+        if match:
+            self.routed = match.group(1)
+        return ""
+
+    def click(self, seat, *args, **kwargs):
+        self.on_click.pop(0)(self)
+        return ""
+
+    def start(self, name, data):
+        partial = os.path.join(self.routed, name + commands.PARTIAL_DOWNLOAD)
+        with open(partial, "wb") as handle:
+            handle.write(data)
+        self.started.append(partial)
+        return partial
+
+    @staticmethod
+    def finish(partial):
+        os.replace(partial, partial[: -len(commands.PARTIAL_DOWNLOAD)])
 
 
-def test_download_attaches_the_file_the_click_produced(monkeypatch, tmp_path):
+def test_a_late_file_from_a_timed_out_download_is_never_returned_for_a_later_click(
+    monkeypatch, tmp_path
+):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    scratch = commands.session.scratch_dir("seat")
-    landed = os.path.join(scratch, ".playwright-cli", "chart.png")
-    os.makedirs(os.path.dirname(landed), exist_ok=True)
-    with open(landed, "wb") as handle:
-        handle.write(b"\x89PNG bytes")
-    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("chart.png"))
+    chrome = FakeDownloads(monkeypatch)
+
+    def second(c):
+        c.start("current.png", b"CURRENT IMAGE")
+        c.finish(c.started[0])  # the first call's download lands during the second
+
+    chrome.on_click = [lambda c: c.start("prior.png", b"PRIOR IMAGE"), second]
+    first = commands.run_script("seat", "download #first 0\n")
+    assert not first.ok and "prior.png.crdownload is still arriving" in first.error
+
+    later = commands.run_script("seat", "download #second 0\n")
+    assert not later.ok, "the prior download was handed back for a later click"
+    assert "current.png.crdownload is still arriving" in later.error
+    assert not any(path.endswith("prior.png") for path in later.files)
+
+
+def test_a_download_returns_its_own_bytes_while_an_earlier_one_finishes(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    chrome = FakeDownloads(monkeypatch)
+
+    def second(c):
+        c.finish(c.started[0])
+        c.finish(c.start("current.png", b"CURRENT IMAGE"))
+
+    chrome.on_click = [lambda c: c.start("prior.png", b"PRIOR IMAGE"), second]
+    commands.run_script("seat", "download #first 0\n")
+    later = commands.run_script("seat", "download #second 0\n")
+    assert later.ok, later.error
+    assert open(later.files[0], "rb").read() == b"CURRENT IMAGE"
+
+
+def test_two_same_name_downloads_in_one_second_keep_their_own_bytes(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    monkeypatch.setattr(commands.time, "strftime", lambda _: "20260924T000000")
+    chrome = FakeDownloads(monkeypatch)
+    chrome.on_click = [
+        lambda c: c.finish(c.start("same.png", b"FIRST")),
+        lambda c: c.finish(c.start("same.png", b"SECOND")),
+    ]
+    one = commands.run_script("seat", "download #one 0\n")
+    two = commands.run_script("seat", "download #two 0\n")
+    assert one.ok and two.ok, (one.error, two.error)
+    assert one.files[0] != two.files[0]
+    assert open(one.files[0], "rb").read() == b"FIRST"
+    assert open(two.files[0], "rb").read() == b"SECOND"
+
+
+def test_an_artifact_path_is_never_one_already_taken(monkeypatch, tmp_path):
+    monkeypatch.setenv("A8S_BROWSER_HOME", str(tmp_path))
+    monkeypatch.setattr(commands.time, "strftime", lambda _: "20260924T000000")
+    first = commands.artifact("seat", "screen.png")
+    open(first, "w").close()
+    assert commands.artifact("seat", "screen.png") != first
+
+
+def test_download_attaches_the_file_the_click_saved_into_the_seat(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    chrome = FakeDownloads(monkeypatch)
+    chrome.on_click = [lambda c: c.finish(c.start("chart.png", b"\x89PNG bytes"))]
 
     run = commands.run_script("seat", "download button.save\n")
     assert run.ok, run.error
     assert len(run.files) == 1
-    # Copied out of the self-pruning scratch dir, not handed over where it fell.
-    assert run.files[0] != landed
+    assert run.files[0].startswith(commands.session.artifacts_dir("seat"))
     assert run.files[0].endswith("chart.png")
     assert open(run.files[0], "rb").read() == b"\x89PNG bytes"
+    # Moved, not copied, and the call's own directory goes with it.
+    assert os.listdir(commands.session.downloads_dir("seat")) == []
 
 
-def test_download_waits_for_an_event_that_arrives_after_the_click(monkeypatch, tmp_path):
+def test_download_points_chrome_at_a_directory_of_its_own_before_clicking(
+    monkeypatch, tmp_path
+):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    scratch = commands.session.scratch_dir("seat")
-    landed = os.path.join(scratch, ".playwright-cli", "late.pdf")
-    os.makedirs(os.path.dirname(landed), exist_ok=True)
-    with open(landed, "w") as handle:
-        handle.write("pdf")
+    chrome = FakeDownloads(monkeypatch)
+    seen = []
+    chrome.on_click = [lambda c: seen.append(c.routed) or c.finish(c.start("a.txt", b"a"))]
+    commands.run_script("seat", "download button.save\n")
+    base = commands.session.downloads_dir("seat")
+    assert seen[0] != base
+    assert os.path.dirname(seen[0]) == base
 
-    calls = []
 
-    def answer(seat, *a, **k):
-        calls.append(a[0])
-        # The click itself reports nothing; the event lands on a later poll.
-        return _downloaded("late.pdf") if len(calls) >= 3 else ""
+def test_download_waits_for_a_partial_file_to_finish(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    chrome = FakeDownloads(monkeypatch)
+    chrome.on_click = [lambda c: c.start("late.pdf", b"p")]
+    sleeps = []
 
-    monkeypatch.setattr(plc, "run", answer)
+    def finish_later(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            chrome.finish(chrome.started[0])
+
+    monkeypatch.setattr(commands.time, "sleep", finish_later)
     run = commands.run_script("seat", "download button.save 5\n")
     assert run.ok, run.error
-    assert calls[0] == "click"
+    assert len(sleeps) == 3
     assert run.files[0].endswith("late.pdf")
+
+
+def test_download_ignores_files_that_were_already_there(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    with open(os.path.join(commands.session.downloads_dir("seat"), "old.txt"), "wb") as handle:
+        handle.write(b"earlier")
+    chrome = FakeDownloads(monkeypatch)
+    chrome.on_click = [lambda c: c.finish(c.start("new.txt", b"now"))]
+    run = commands.run_script("seat", "download button.save\n")
+    assert run.ok, run.error
+    assert run.files[0].endswith("new.txt")
 
 
 def test_download_fails_when_nothing_downloads(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: "")
-    run = commands.run_script("seat", "download button.save 1\n")
+    chrome = FakeDownloads(monkeypatch)
+    chrome.on_click = [lambda c: None]
+    run = commands.run_script("seat", "download button.save 0\n")
     assert not run.ok
-    assert "produced no download" in run.error
+    assert "saved no finished file" in run.error
+    # An empty call directory is not left behind.
+    assert os.listdir(commands.session.downloads_dir("seat")) == []
 
 
-def test_download_fails_when_the_named_file_is_missing(monkeypatch, tmp_path):
+def test_download_that_never_finishes_names_the_partial_file(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("ghost.bin"))
-    run = commands.run_script("seat", "download button.save\n")
+    chrome = FakeDownloads(monkeypatch)
+    chrome.on_click = [lambda c: c.start("big.iso", b"x")]
+    run = commands.run_script("seat", "download button.save 0\n")
     assert not run.ok
-    assert "which is not there" in run.error
+    assert "big.iso.crdownload is still arriving" in run.error
+    assert os.path.dirname(chrome.started[0]) in run.error
+
+
+def test_text_arrives_as_the_page_wrote_it(monkeypatch, tmp_path):
+    """playwright-cli prints a string result as a JSON literal; the verb decodes it once."""
+    import json
+    page_text = 'line one\nsaid "hi" \\ back\\slash, a literal \\n, caf\u00e9 \u2014 \U0001F600'
+    for ensure_ascii in (False, True):
+        _stub_browser(monkeypatch, tmp_path)
+        printed = json.dumps(page_text, ensure_ascii=ensure_ascii)
+        monkeypatch.setattr(plc, "run", lambda *a, printed=printed, **k: f"### Result\n{printed}\n")
+        run = commands.run_script("seat", "text #reply\n")
+        assert run.ok, run.error
+        assert run.steps[0]["output"] == page_text
