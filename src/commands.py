@@ -13,6 +13,7 @@ opt-in unless the seat turns it on.
 import os
 import re
 import shlex
+import shutil
 import time
 
 import plc
@@ -238,6 +239,116 @@ def _video_chapter(seat, args):
     return f"chapter {state['chapters']}: {title}"
 
 
+# `- Downloaded file <name> to "<path relative to cwd>"` — playwright-cli saves
+# every download itself and reports it here. The path is relative to the process
+# cwd, which is the seat's scratch dir.
+DOWNLOADED = re.compile(r'^-\s+Downloaded file\s+(?P<name>.+?)\s+to\s+"(?P<path>.+)"\s*$')
+
+DOWNLOAD_POLL_SECONDS = 30.0
+
+
+def _local_file(path, verb):
+    """A path the seat can actually open, or a refusal that says why.
+
+    Relative paths are refused rather than resolved: the seat's cwd is its own
+    scratch dir, so a relative path from a sender means a file on the *sender's*
+    machine, and quietly resolving it here would find something else or nothing.
+    """
+    if not os.path.isabs(path):
+        raise plc.BrowserError(
+            f"{verb}: {path!r} is not an absolute path — name the file by its full "
+            "path on the machine holding the browser"
+        )
+    if not os.path.isfile(path):
+        raise plc.BrowserError(f"{verb}: no such file: {path}")
+    return path
+
+
+def _upload(seat, args):
+    """Hand one file to a file chooser the page has already opened.
+
+    playwright-cli's own `upload` is the only thing that answers a chooser: the
+    modal belongs to the driver, not the DOM, so no amount of page JS reaches it.
+
+    One file, because that is what the command takes. Its help says "one or
+    multiple files" and calls the argument "the absolute paths", but the parser
+    accepts a single positional and rejects two before it touches the browser.
+    A second `upload` is not a workaround either: the first one answers the
+    chooser and closes it, so the rest go nowhere. Multi-file belongs to `drop`,
+    whose `--path` really does repeat.
+    """
+    _need(args, 1, "upload <path>")
+    if len(args) > 1:
+        raise plc.BrowserError(
+            f"upload takes one file, not {len(args)} — the file chooser is answered "
+            "once and closes. Use `drop <target> <path> <path> ...` for several at a time"
+        )
+    path = _local_file(args[0], "upload")
+    plc.run(seat, "upload", path, timeout=120)
+    return os.path.basename(path)
+
+
+def _drop(seat, args):
+    """Drop files onto an element, as a person dragging them in would.
+
+    Preferred over `upload` where a page accepts it, because it opens no menu
+    and no chooser — one command, no intermediate state to get wedged in.
+    """
+    _need(args, 2, "drop <target> <path> [<path> ...]")
+    target = resolve.click_target(seat, args[0])
+    paths = [_local_file(arg, "drop") for arg in args[1:]]
+    argv = ["drop", target]
+    for path in paths:
+        argv += ["--path", path]
+    plc.run(seat, *argv, timeout=120)
+    return f"{target} <- " + ", ".join(os.path.basename(path) for path in paths)
+
+
+def _downloaded_path(seat, output):
+    """The file a command's own output says was downloaded, or None."""
+    for line in (output or "").splitlines():
+        match = DOWNLOADED.match(line.strip())
+        if match:
+            return os.path.join(session.scratch_dir(seat), match.group("path"))
+    return None
+
+
+def _download(seat, args, run):
+    """Click something that downloads, and attach what came back.
+
+    playwright-cli saves the bytes on its own, into `.playwright-cli` under the
+    seat's scratch dir, and names the file in an `### Events` line. Two things
+    are left to do here. The event may land after the click's own output — a
+    download is not instant — so the wait polls with a cheap command, each of
+    which renders any events since the last one. And the scratch dir is pruned
+    of anything a day old on every run, so the file is copied into artifacts
+    rather than handed over where it landed.
+    """
+    _need(args, 1, "download <target> [seconds]")
+    timeout = _seconds(args[1]) if len(args) > 1 else DOWNLOAD_POLL_SECONDS
+    target = resolve.click_target(seat, args[0])
+
+    source = _downloaded_path(seat, plc.run(seat, "click", target, timeout=60))
+    deadline = time.monotonic() + timeout
+    while source is None and time.monotonic() < deadline:
+        time.sleep(0.5)
+        # Any command renders the events raised since the last one; this is the
+        # cheapest one that does, and it touches nothing on the page.
+        source = _downloaded_path(seat, plc.run(seat, "eval", "() => 1"))
+
+    if source is None:
+        raise plc.BrowserError(
+            f"download: {target} produced no download within {timeout:.0f}s"
+        )
+    if not os.path.isfile(source):
+        raise plc.BrowserError(f"download: the browser named {source}, which is not there")
+
+    path = artifact(seat, os.path.basename(source))
+    shutil.copyfile(source, path)
+    run.attach(path)
+    return path
+
+
 def _run_code(seat, args, allow_eval):
     """Playwright statements with `page` in scope — the driver, not the DOM.
 
@@ -341,6 +452,12 @@ def _step(seat, verb, args, run, allow_eval):
         path = plc.screenshot(seat, artifact(seat, "screen.png"))
         run.attach(path)
         return path
+    if verb == "upload":
+        return _upload(seat, args)
+    if verb == "drop":
+        return _drop(seat, args)
+    if verb == "download":
+        return _download(seat, args, run)
     if verb == "eval":
         if not allow_eval:
             raise plc.BrowserError(

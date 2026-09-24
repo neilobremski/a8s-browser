@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- File verbs, so a seat can carry files as well as text. `upload <path>` hands one file to a chooser the page has already opened, which is a driver-level modal no page JS can reach — one file, because a chooser is answered once and then closes, so `drop` is the verb for several at a time. `drop <target> <path> ...` drops them onto an element as a drag would, which opens no menu and no chooser and is the one to prefer where a page accepts it. `download <target> [secs]` clicks something that downloads and attaches what came back.
+- All three name files by their absolute path on the machine holding the browser. A relative path is refused rather than resolved: the seat's working directory is its own scratch dir, so a relative path means a file on the sender's machine and resolving it here would find something else or nothing.
+- `download` waits on playwright-cli's own download event rather than watching for a file, because playwright-cli saves the bytes itself and names them in an event that may land after the click returns. The file is then copied into the run's artifacts, since the scratch directory it lands in is pruned of anything a day old on every run.
+- None of the three needs `A8S_BROWSER_ALLOW_EVAL`. That gate is on caller-supplied code, not on the capability — this repo already runs fixed page JS ungated in `wait-for` and on every `click` and `fill`.
+
 ## 0.2.0
 
 - `run-code`: Playwright statements with `page` in scope, for pages the DOM cannot drive — a menu that ignores a synthetic click, a file chooser, a driver-level wait. It is gated on the same `A8S_BROWSER_ALLOW_EVAL` opt-in as `eval`, because it is the same class of capability and strictly more of it.

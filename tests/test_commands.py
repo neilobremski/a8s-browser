@@ -1,3 +1,5 @@
+import os
+
 import commands
 import plc
 
@@ -336,3 +338,173 @@ def _capture_code(monkeypatch, output="### Result\nok\n"):
 def _touch(path):
     open(path, "w").close()
     return path
+
+
+def _stub_targets(monkeypatch):
+    monkeypatch.setattr(commands.resolve, "click_target", lambda seat, arg: arg)
+
+
+def _stub_real_argv(monkeypatch, answer=None):
+    """A playwright-cli stub that enforces its REAL argv contract.
+
+    A stub that accepts anything only proves this repo builds the argv it meant
+    to build. The installed CLI takes exactly one positional for `upload` — its
+    help says "one or multiple files" and names the argument "the absolute
+    paths", and the parser still rejects two before it opens a browser. Believing
+    the help shipped a broken verb, so the contract lives here now.
+    """
+    seen = []
+
+    def run(seat, *args, **kwargs):
+        seen.append(args)
+        verb, rest = args[0], list(args[1:])
+        if verb == "upload":
+            positional = [arg for arg in rest if not arg.startswith("-")]
+            if len(positional) != 1:
+                raise plc.BrowserError(
+                    f"too many arguments: expected 1, received {len(positional)}"
+                )
+        if verb == "drop":
+            if not rest or rest[0].startswith("-"):
+                raise plc.BrowserError("drop needs a target")
+            flags = rest[1:]
+            if any(flags[index] != "--path" for index in range(0, len(flags), 2)):
+                raise plc.BrowserError("drop takes files as repeated --path")
+        return answer(args) if answer else ""
+
+    monkeypatch.setattr(plc, "run", run)
+    return seen
+
+
+def test_upload_refuses_a_relative_path(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    run = commands.run_script("seat", "upload notes.txt\n")
+    assert not run.ok
+    assert "not an absolute path" in run.error
+
+
+def test_upload_refuses_a_file_that_is_not_there(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    run = commands.run_script("seat", f"upload {tmp_path / 'gone.txt'}\n")
+    assert not run.ok
+    assert "no such file" in run.error
+
+
+def test_upload_hands_its_one_path_to_playwright(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    seen = _stub_real_argv(monkeypatch)
+    one = tmp_path / "a.txt"
+    one.write_text("a")
+    run = commands.run_script("seat", f"upload {one}\n")
+    assert run.ok, run.error
+    assert seen == [("upload", str(one))]
+    assert run.steps[0]["output"] == "a.txt"
+
+
+def test_upload_refuses_several_files_and_names_drop(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_real_argv(monkeypatch)
+    one, two = tmp_path / "a.txt", tmp_path / "b.txt"
+    one.write_text("a")
+    two.write_text("b")
+    run = commands.run_script("seat", f"upload {one} {two}\n")
+    # The chooser is answered once and closes, so a second upload goes nowhere.
+    # The refusal has to point at the verb that does take several.
+    assert not run.ok
+    assert "takes one file" in run.error
+    assert "drop" in run.error
+
+
+def test_upload_never_sends_an_argv_the_real_cli_refuses(monkeypatch, tmp_path):
+    """The stub enforces playwright-cli's own argv rules, not this repo's."""
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_real_argv(monkeypatch)
+    one = tmp_path / "a.txt"
+    one.write_text("a")
+    run = commands.run_script("seat", f"upload {one}\n")
+    assert run.ok, run.error
+    assert "expected 1" not in (run.error or "")
+
+
+def test_drop_sends_one_path_flag_per_file(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    seen = _stub_real_argv(monkeypatch)
+    one, two = tmp_path / "a.txt", tmp_path / "b.txt"
+    one.write_text("a")
+    two.write_text("b")
+    run = commands.run_script("seat", f"drop div.box {one} {two}\n")
+    assert run.ok, run.error
+    assert seen == [("drop", "div.box", "--path", str(one), "--path", str(two))]
+
+
+def test_drop_needs_a_target_and_a_file(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    run = commands.run_script("seat", "drop div.box\n")
+    assert not run.ok
+    assert "drop <target> <path>" in run.error
+
+
+def _downloaded(name):
+    return f'### Events\n- Downloaded file {name} to ".playwright-cli/{name}"\n'
+
+
+def test_download_attaches_the_file_the_click_produced(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    scratch = commands.session.scratch_dir("seat")
+    landed = os.path.join(scratch, ".playwright-cli", "chart.png")
+    os.makedirs(os.path.dirname(landed), exist_ok=True)
+    with open(landed, "wb") as handle:
+        handle.write(b"\x89PNG bytes")
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("chart.png"))
+
+    run = commands.run_script("seat", "download button.save\n")
+    assert run.ok, run.error
+    assert len(run.files) == 1
+    # Copied out of the self-pruning scratch dir, not handed over where it fell.
+    assert run.files[0] != landed
+    assert run.files[0].endswith("chart.png")
+    assert open(run.files[0], "rb").read() == b"\x89PNG bytes"
+
+
+def test_download_waits_for_an_event_that_arrives_after_the_click(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    scratch = commands.session.scratch_dir("seat")
+    landed = os.path.join(scratch, ".playwright-cli", "late.pdf")
+    os.makedirs(os.path.dirname(landed), exist_ok=True)
+    with open(landed, "w") as handle:
+        handle.write("pdf")
+
+    calls = []
+
+    def answer(seat, *a, **k):
+        calls.append(a[0])
+        # The click itself reports nothing; the event lands on a later poll.
+        return _downloaded("late.pdf") if len(calls) >= 3 else ""
+
+    monkeypatch.setattr(plc, "run", answer)
+    run = commands.run_script("seat", "download button.save 5\n")
+    assert run.ok, run.error
+    assert calls[0] == "click"
+    assert run.files[0].endswith("late.pdf")
+
+
+def test_download_fails_when_nothing_downloads(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: "")
+    run = commands.run_script("seat", "download button.save 1\n")
+    assert not run.ok
+    assert "produced no download" in run.error
+
+
+def test_download_fails_when_the_named_file_is_missing(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("ghost.bin"))
+    run = commands.run_script("seat", "download button.save\n")
+    assert not run.ok
+    assert "which is not there" in run.error
