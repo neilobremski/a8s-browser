@@ -113,10 +113,19 @@ def run(seat, *args, timeout=30):
 
 
 def result_of(output):
-    """The '### Result' body, unquoted."""
+    """The '### Result' body; a string result arrives as the string itself.
+
+    playwright-cli prints a string result as a JSON literal, so its newlines,
+    quotes and backslashes are escapes until that literal is decoded whole.
+    """
     body = _section(output, "Result")
     if body is None:
         raise BrowserError(f"unrecognized playwright-cli output: {output[:200]!r}")
+    if len(body) >= 2 and body[0] == body[-1] == '"':
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            pass
     if len(body) >= 2 and body[0] == body[-1] and body[0] in ("'", '"'):
         body = body[1:-1]
     return body
@@ -159,14 +168,11 @@ def evaluate(seat, expression, timeout=30):
 
 
 def parse_json(payload):
-    """A JSON.stringify result as the CLI reports it — sometimes still escaped."""
+    """The text of a JSON.stringify result, parsed."""
     try:
         return json.loads(payload)
-    except json.JSONDecodeError:
-        try:
-            return json.loads(payload.encode().decode("unicode_escape"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as err:
-            raise BrowserError(f"expected JSON from the page, got {payload[:200]!r}") from err
+    except json.JSONDecodeError as err:
+        raise BrowserError(f"expected JSON from the page, got {payload[:200]!r}") from err
 
 
 def evaluate_json(seat, expression, timeout=30):

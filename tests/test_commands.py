@@ -446,50 +446,65 @@ def test_drop_needs_a_target_and_a_file(monkeypatch, tmp_path):
     assert "drop <target> <path>" in run.error
 
 
-def _downloaded(name):
-    return f'### Events\n- Downloaded file {name} to ".playwright-cli/{name}"\n'
+def _chrome_saves(seat, name, data, partial=False):
+    """What the seat's Chrome does on a download: bytes land in the seat's dir."""
+    directory = commands.session.downloads_dir(seat)
+    suffix = commands.PARTIAL_DOWNLOAD if partial else ""
+    with open(os.path.join(directory, name + suffix), "wb") as handle:
+        handle.write(data)
 
 
-def test_download_attaches_the_file_the_click_produced(monkeypatch, tmp_path):
+def test_download_attaches_the_file_the_click_saved_into_the_seat(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    scratch = commands.session.scratch_dir("seat")
-    landed = os.path.join(scratch, ".playwright-cli", "chart.png")
-    os.makedirs(os.path.dirname(landed), exist_ok=True)
-    with open(landed, "wb") as handle:
-        handle.write(b"\x89PNG bytes")
-    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("chart.png"))
+    def click(seat, *a, **k):
+        _chrome_saves(seat, "chart.png", b"\x89PNG bytes")
+        return ""
+    monkeypatch.setattr(plc, "run", click)
 
     run = commands.run_script("seat", "download button.save\n")
     assert run.ok, run.error
     assert len(run.files) == 1
-    # Copied out of the self-pruning scratch dir, not handed over where it fell.
-    assert run.files[0] != landed
+    assert run.files[0].startswith(commands.session.artifacts_dir("seat"))
     assert run.files[0].endswith("chart.png")
     assert open(run.files[0], "rb").read() == b"\x89PNG bytes"
+    # Moved, not copied: the seat's downloads dir keeps only what nobody asked for.
+    assert os.listdir(commands.session.downloads_dir("seat")) == []
 
 
-def test_download_waits_for_an_event_that_arrives_after_the_click(monkeypatch, tmp_path):
+def test_download_waits_for_a_partial_file_to_finish(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    scratch = commands.session.scratch_dir("seat")
-    landed = os.path.join(scratch, ".playwright-cli", "late.pdf")
-    os.makedirs(os.path.dirname(landed), exist_ok=True)
-    with open(landed, "w") as handle:
-        handle.write("pdf")
+    directory = commands.session.downloads_dir("seat")
+    monkeypatch.setattr(
+        plc, "run", lambda seat, *a, **k: _chrome_saves(seat, "late.pdf", b"p", True)
+    )
+    sleeps = []
 
-    calls = []
+    def finish_later(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            partial = os.path.join(directory, "late.pdf" + commands.PARTIAL_DOWNLOAD)
+            os.replace(partial, os.path.join(directory, "late.pdf"))
 
-    def answer(seat, *a, **k):
-        calls.append(a[0])
-        # The click itself reports nothing; the event lands on a later poll.
-        return _downloaded("late.pdf") if len(calls) >= 3 else ""
-
-    monkeypatch.setattr(plc, "run", answer)
+    monkeypatch.setattr(commands.time, "sleep", finish_later)
     run = commands.run_script("seat", "download button.save 5\n")
     assert run.ok, run.error
-    assert calls[0] == "click"
+    assert len(sleeps) == 3
     assert run.files[0].endswith("late.pdf")
+
+
+def test_download_ignores_files_that_were_already_there(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    _chrome_saves("seat", "old.txt", b"earlier")
+    def click(seat, *a, **k):
+        _chrome_saves(seat, "new.txt", b"now")
+        return ""
+    monkeypatch.setattr(plc, "run", click)
+    run = commands.run_script("seat", "download button.save\n")
+    assert run.ok, run.error
+    assert run.files[0].endswith("new.txt")
 
 
 def test_download_fails_when_nothing_downloads(monkeypatch, tmp_path):
@@ -498,13 +513,29 @@ def test_download_fails_when_nothing_downloads(monkeypatch, tmp_path):
     monkeypatch.setattr(plc, "run", lambda seat, *a, **k: "")
     run = commands.run_script("seat", "download button.save 1\n")
     assert not run.ok
-    assert "produced no download" in run.error
+    assert "saved no finished file" in run.error
+    assert commands.session.downloads_dir("seat") in run.error
 
 
-def test_download_fails_when_the_named_file_is_missing(monkeypatch, tmp_path):
+def test_download_that_never_finishes_names_the_partial_file(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("ghost.bin"))
-    run = commands.run_script("seat", "download button.save\n")
+    monkeypatch.setattr(
+        plc, "run", lambda seat, *a, **k: _chrome_saves(seat, "big.iso", b"x", True)
+    )
+    run = commands.run_script("seat", "download button.save 1\n")
     assert not run.ok
-    assert "which is not there" in run.error
+    assert "big.iso.crdownload is still arriving" in run.error
+
+
+def test_text_arrives_as_the_page_wrote_it(monkeypatch, tmp_path):
+    """playwright-cli prints a string result as a JSON literal; the verb decodes it once."""
+    import json
+    page_text = 'line one\nsaid "hi" \\ back\\slash, a literal \\n, caf\u00e9 \u2014 \U0001F600'
+    for ensure_ascii in (False, True):
+        _stub_browser(monkeypatch, tmp_path)
+        printed = json.dumps(page_text, ensure_ascii=ensure_ascii)
+        monkeypatch.setattr(plc, "run", lambda *a, printed=printed, **k: f"### Result\n{printed}\n")
+        run = commands.run_script("seat", "text #reply\n")
+        assert run.ok, run.error
+        assert run.steps[0]["output"] == page_text

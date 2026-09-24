@@ -1,3 +1,5 @@
+import json
+
 import session
 
 
@@ -89,12 +91,16 @@ class FakeSeat:
     def run_code(self, seat, body, timeout=60):
         if "setWindowBounds" in body:
             self.calls.append("unminimise")
-            self.window_state = "normal"
+            self.window_state, self.visibility = "normal", "visible"
+            return "### Result\nundefined"
+        if "bringToFront" in body:
+            self.calls.append("front")
+            self.visibility = "visible"
             return "### Result\nundefined"
         window = "null" if self.window_state is None else "7"
         state = "null" if self.window_state is None else f'\\"{self.window_state}\\"'
         return (
-            f'### Result\n"{{\\"url\\":\\"{self.url}\\",'
+            f'### Result\n"{{\\"url\\":\\"{self.url}\\",\\"visible\\":\\"{self.visibility}\\",'
             f'\\"window\\":{window},\\"state\\":{state}}}"'
         )
 
@@ -106,10 +112,18 @@ class FakeSeat:
 
 
 def test_a_window_behind_other_windows_keeps_its_chrome_and_its_page(monkeypatch):
-    """macOS reports an occluded window's page as hidden; that is not a dead browser."""
-    seat = FakeSeat(monkeypatch, "https://example.com/", visibility="hidden")
+    """A covered window reads visible under the launch flag, and is left alone."""
+    seat = FakeSeat(monkeypatch, "https://example.com/")
     session.ensure_running("seat")
     assert seat.calls == []
+    assert seat.url == "https://example.com/"
+
+
+def test_a_hidden_page_in_a_normal_window_is_brought_forward_not_restarted(monkeypatch):
+    """A hidden app's page reads hidden in a normal window; it is not a dead browser."""
+    seat = FakeSeat(monkeypatch, "https://example.com/", visibility="hidden")
+    session.ensure_running("seat")
+    assert seat.calls == ["front"]
     assert seat.url == "https://example.com/"
 
 
@@ -167,3 +181,34 @@ def test_chrome_launches_with_occluded_windows_kept_visible(monkeypatch, tmp_pat
     monkeypatch.setattr(session.subprocess, "Popen", lambda cmd, **k: launched.append(cmd))
     session._launch_chrome("seat")
     assert "--disable-backgrounding-occluded-windows" in launched[0]
+
+
+def test_every_probe_routes_downloads_into_the_seat(monkeypatch, tmp_path):
+    monkeypatch.setenv("A8S_BROWSER_HOME", str(tmp_path))
+    bodies = []
+    monkeypatch.setattr(session.plc, "is_open", lambda seat: True)
+    page = {"url": "about:blank", "visible": "visible", "window": 7, "state": "normal"}
+    def probe(seat, body, timeout=60):
+        bodies.append(body)
+        return "### Result\n" + json.dumps(json.dumps(page))
+    monkeypatch.setattr(session.plc, "run_code", probe)
+    session.ensure_running("seat")
+    assert "Browser.setDownloadBehavior" in bodies[0]
+    assert f"downloadPath: '{session.downloads_dir('seat')}'" in bodies[0]
+    assert session.downloads_dir("seat").startswith(str(tmp_path))
+
+
+def test_open_routes_downloads_right_after_attaching(monkeypatch, tmp_path):
+    monkeypatch.setenv("A8S_BROWSER_HOME", str(tmp_path))
+    monkeypatch.setattr(session.plc, "is_open", lambda seat: False)
+    monkeypatch.setattr(session, "cdp_base", lambda seat: "http://127.0.0.1:9222")
+    steps = []
+    monkeypatch.setattr(session.plc, "run", lambda seat, *a, **k: steps.append(a[0]))
+    monkeypatch.setattr(
+        session.plc, "run_code",
+        lambda seat, body, timeout=60: steps.append(
+            "route" if "setDownloadBehavior" in body else "code"
+        ),
+    )
+    session.open_browser("seat")
+    assert steps == ["attach", "route"]

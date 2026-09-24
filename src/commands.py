@@ -239,11 +239,6 @@ def _video_chapter(seat, args):
     return f"chapter {state['chapters']}: {title}"
 
 
-# `- Downloaded file <name> to "<path relative to cwd>"` — playwright-cli saves
-# every download itself and reports it here. The path is relative to the process
-# cwd, which is the seat's scratch dir.
-DOWNLOADED = re.compile(r'^-\s+Downloaded file\s+(?P<name>.+?)\s+to\s+"(?P<path>.+)"\s*$')
-
 DOWNLOAD_POLL_SECONDS = 30.0
 
 
@@ -304,47 +299,41 @@ def _drop(seat, args):
     return f"{target} <- " + ", ".join(os.path.basename(path) for path in paths)
 
 
-def _downloaded_path(seat, output):
-    """The file a command's own output says was downloaded, or None."""
-    for line in (output or "").splitlines():
-        match = DOWNLOADED.match(line.strip())
-        if match:
-            return os.path.join(session.scratch_dir(seat), match.group("path"))
-    return None
+PARTIAL_DOWNLOAD = ".crdownload"
 
 
 def _download(seat, args, run):
     """Click something that downloads, and attach what came back.
 
-    playwright-cli saves the bytes on its own, into `.playwright-cli` under the
-    seat's scratch dir, and names the file in an `### Events` line. Two things
-    are left to do here. The event may land after the click's own output — a
-    download is not instant — so the wait polls with a cheap command, each of
-    which renders any events since the last one. And the scratch dir is pruned
-    of anything a day old on every run, so the file is copied into artifacts
-    rather than handed over where it landed.
+    The seat's Chrome saves downloads into the seat's own downloads dir (see
+    session._route_downloads_js), writing `<name>.crdownload` while bytes arrive
+    and renaming it when they are all there. So a new file without that suffix
+    is a finished download, and the wait is for one to appear. It is moved into
+    artifacts, so the downloads dir holds only what nobody asked for.
     """
     _need(args, 1, "download <target> [seconds]")
     timeout = _seconds(args[1]) if len(args) > 1 else DOWNLOAD_POLL_SECONDS
     target = resolve.click_target(seat, args[0])
+    directory = session.downloads_dir(seat)
+    before = set(os.listdir(directory))
 
-    source = _downloaded_path(seat, plc.run(seat, "click", target, timeout=60))
+    plc.run(seat, "click", target, timeout=60)
     deadline = time.monotonic() + timeout
-    while source is None and time.monotonic() < deadline:
-        time.sleep(0.5)
-        # Any command renders the events raised since the last one; this is the
-        # cheapest one that does, and it touches nothing on the page.
-        source = _downloaded_path(seat, plc.run(seat, "eval", "() => 1"))
+    while True:
+        new = sorted(set(os.listdir(directory)) - before)
+        finished = [name for name in new if not name.endswith(PARTIAL_DOWNLOAD)]
+        if finished:
+            break
+        if time.monotonic() >= deadline:
+            detail = f"; {new[0]} is still arriving" if new else ""
+            raise plc.BrowserError(
+                f"download: {target} saved no finished file into {directory} "
+                f"within {timeout:.0f}s{detail}"
+            )
+        time.sleep(0.25)
 
-    if source is None:
-        raise plc.BrowserError(
-            f"download: {target} produced no download within {timeout:.0f}s"
-        )
-    if not os.path.isfile(source):
-        raise plc.BrowserError(f"download: the browser named {source}, which is not there")
-
-    path = artifact(seat, os.path.basename(source))
-    shutil.copyfile(source, path)
+    path = artifact(seat, finished[0])
+    shutil.move(os.path.join(directory, finished[0]), path)
     run.attach(path)
     return path
 
