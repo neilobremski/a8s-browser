@@ -235,8 +235,9 @@ def _launch_chrome(seat):
     )
 
 
-def _route_downloads_js(seat):
-    """Page-less JS that points the attached Chrome's downloads at the seat.
+def _route_downloads_js(seat, directory=None):
+    """Page-less JS that points the attached Chrome's downloads at the seat
+    (or at `directory`, one of the seat's own).
 
     The seat attaches to a Chrome it launched as a person would, so Playwright
     manages no downloads and Chrome saves to its profile default. The
@@ -248,7 +249,8 @@ def _route_downloads_js(seat):
         "const br = page.context().browser();"
         " if (!br.__a8sDownloads) br.__a8sDownloads = await br.newBrowserCDPSession();"
         " await br.__a8sDownloads.send('Browser.setDownloadBehavior',"
-        f" {{behavior: 'allow', downloadPath: '{plc.js_string(downloads_dir(seat))}'}});"
+        " {behavior: 'allow', downloadPath:"
+        f" '{plc.js_string(directory or downloads_dir(seat))}'}});"
     )
 
 

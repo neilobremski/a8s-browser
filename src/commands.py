@@ -13,7 +13,7 @@ opt-in unless the seat turns it on.
 import os
 import re
 import shlex
-import shutil
+import tempfile
 import time
 
 import plc
@@ -82,9 +82,36 @@ class Run:
 
 
 def artifact(seat, suffix):
+    """A path in the seat's artifacts that no earlier artifact holds.
+
+    The stamp has one-second resolution, so two artifacts of one name in the
+    same second get a counter rather than the same path.
+    """
     directory = session.artifacts_dir(seat)
     os.makedirs(directory, exist_ok=True)
-    return os.path.join(directory, f"{time.strftime('%Y%m%dT%H%M%S')}-{suffix}")
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    path = os.path.join(directory, f"{stamp}-{suffix}")
+    count = 1
+    while os.path.lexists(path):
+        count += 1
+        path = os.path.join(directory, f"{stamp}-{count}-{suffix}")
+    return path
+
+
+def _claim_artifact(seat, source, name):
+    """Move `source` into artifacts without replacing anything already there.
+
+    os.link refuses an existing target, so a path another run took between
+    choosing and moving is skipped rather than overwritten.
+    """
+    while True:
+        path = artifact(seat, name)
+        try:
+            os.link(source, path)
+        except FileExistsError:
+            continue
+        os.remove(source)
+        return path
 
 
 def _write_snapshot(seat, run, label="snapshot"):
@@ -305,35 +332,40 @@ PARTIAL_DOWNLOAD = ".crdownload"
 def _download(seat, args, run):
     """Click something that downloads, and attach what came back.
 
-    The seat's Chrome saves downloads into the seat's own downloads dir (see
-    session._route_downloads_js), writing `<name>.crdownload` while bytes arrive
-    and renaming it when they are all there. So a new file without that suffix
-    is a finished download, and the wait is for one to appear. It is moved into
-    artifacts, so the downloads dir holds only what nobody asked for.
+    Each call points Chrome at a directory of its own before it clicks. Chrome
+    fixes a download's path when the download starts, so a download an earlier
+    call gave up on finishes in that call's directory and can never be taken
+    for this one. Chrome writes `<name>.crdownload` while bytes arrive and
+    renames it when they are all there, so the wait is for a finished file.
+    It is moved into artifacts; a directory left holding a partial file is
+    where that file lands if it ever finishes.
     """
     _need(args, 1, "download <target> [seconds]")
     timeout = _seconds(args[1]) if len(args) > 1 else DOWNLOAD_POLL_SECONDS
     target = resolve.click_target(seat, args[0])
-    directory = session.downloads_dir(seat)
-    before = set(os.listdir(directory))
+    directory = tempfile.mkdtemp(prefix="call-", dir=session.downloads_dir(seat))
+    plc.run_code(seat, session._route_downloads_js(seat, directory), timeout=15)
 
     plc.run(seat, "click", target, timeout=60)
     deadline = time.monotonic() + timeout
     while True:
-        new = sorted(set(os.listdir(directory)) - before)
-        finished = [name for name in new if not name.endswith(PARTIAL_DOWNLOAD)]
+        names = sorted(os.listdir(directory))
+        finished = [name for name in names if not name.endswith(PARTIAL_DOWNLOAD)]
         if finished:
             break
         if time.monotonic() >= deadline:
-            detail = f"; {new[0]} is still arriving" if new else ""
+            detail = f"; {names[0]} is still arriving" if names else ""
+            if not names:
+                os.rmdir(directory)
             raise plc.BrowserError(
-                f"download: {target} saved no finished file into {directory} "
-                f"within {timeout:.0f}s{detail}"
+                f"download: {target} saved no finished file within {timeout:.0f}s "
+                f"(Chrome was saving into {directory}){detail}"
             )
         time.sleep(0.25)
 
-    path = artifact(seat, finished[0])
-    shutil.move(os.path.join(directory, finished[0]), path)
+    path = _claim_artifact(seat, os.path.join(directory, finished[0]), finished[0])
+    if not os.listdir(directory):
+        os.rmdir(directory)
     run.attach(path)
     return path
 

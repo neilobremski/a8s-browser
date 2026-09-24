@@ -135,11 +135,14 @@ is what answers a chooser. A chooser is answered once and closes, so a second
 `upload` goes nowhere; several files at a time is `drop`'s job.
 
 `download` clicks its target and attaches whatever came back, and prints the
-artifact's path. The seat's Chrome saves every download into the seat's own
+artifact's path. The seat's Chrome saves every download under the seat's own
 `downloads` directory, never the profile default, which is a person's Downloads
-folder. Chrome writes `<name>.crdownload` while bytes arrive and renames it when
-they are all there, so the wait is for a new finished file. That file is then
-moved into the run's artifacts.
+folder. Each `download` points Chrome at a fresh directory of its own before it
+clicks, so a download an earlier call gave up on can never be returned for a
+later one. Chrome writes `<name>.crdownload` while bytes arrive and renames it
+when they are all there, so the wait is for a finished file. That file is then
+moved into the run's artifacts. An artifact never replaces another: two of one
+name in the same second get a counter in the name.
 
 `click`, `fill`, `select`, `check`, `uncheck` and `hover` take a CSS selector
 or the element's visible text/label — quote a multi-word label
