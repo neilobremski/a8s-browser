@@ -102,7 +102,7 @@ of the page it died on.
 | `click <target>` / `fill <target> <text>` / `press <key>` / `type <text>` | interact |
 | `select <target> <value>` / `check <target>` / `uncheck <target>` / `hover <target>` | more interaction |
 | `scroll <dy>` | wheel-scroll the page |
-| `upload <path> ...` | hand files to a file chooser the page has opened |
+| `upload <path>` | hand one file to a file chooser the page has opened |
 | `drop <target> <path> ...` | drop files onto an element, as a drag would |
 | `download <target> [secs]` | click something that downloads, and attach the file |
 | `dialog-accept [prompt]` / `dialog-dismiss` | answer a modal dialog |
@@ -120,8 +120,11 @@ of the page it died on.
 **absolute path on the machine holding the browser** — a relative path is refused
 rather than resolved, because the seat's own working directory is not the
 sender's. Prefer `drop` where a page accepts it: it opens no menu and no chooser,
-so there is no intermediate state to get wedged in. `upload` is for a chooser the
-page has already opened, which is a driver modal that no page JS can reach.
+so there is no intermediate state to get wedged in, and it takes as many files as
+you give it. `upload` is for a chooser the page has already opened, which is a
+driver modal that no page JS can reach — and it takes **one** file, because that
+is what answers a chooser. A chooser is answered once and closes, so a second
+`upload` goes nowhere; several files at a time is `drop`'s job.
 
 `download` clicks its target and attaches whatever came back. playwright-cli saves
 a download itself and names it in an event, so the wait is for that event rather

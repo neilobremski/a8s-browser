@@ -265,15 +265,27 @@ def _local_file(path, verb):
 
 
 def _upload(seat, args):
-    """Hand files to a file chooser the page has already opened.
+    """Hand one file to a file chooser the page has already opened.
 
     playwright-cli's own `upload` is the only thing that answers a chooser: the
     modal belongs to the driver, not the DOM, so no amount of page JS reaches it.
+
+    One file, because that is what the command takes. Its help says "one or
+    multiple files" and calls the argument "the absolute paths", but the parser
+    accepts a single positional and rejects two before it touches the browser.
+    A second `upload` is not a workaround either: the first one answers the
+    chooser and closes it, so the rest go nowhere. Multi-file belongs to `drop`,
+    whose `--path` really does repeat.
     """
-    _need(args, 1, "upload <path> [<path> ...]")
-    paths = [_local_file(arg, "upload") for arg in args]
-    plc.run(seat, "upload", *paths, timeout=120)
-    return ", ".join(os.path.basename(path) for path in paths)
+    _need(args, 1, "upload <path>")
+    if len(args) > 1:
+        raise plc.BrowserError(
+            f"upload takes one file, not {len(args)} — the file chooser is answered "
+            "once and closes. Use `drop <target> <path> <path> ...` for several at a time"
+        )
+    path = _local_file(args[0], "upload")
+    plc.run(seat, "upload", path, timeout=120)
+    return os.path.basename(path)
 
 
 def _drop(seat, args):

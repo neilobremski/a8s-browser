@@ -344,6 +344,38 @@ def _stub_targets(monkeypatch):
     monkeypatch.setattr(commands.resolve, "click_target", lambda seat, arg: arg)
 
 
+def _stub_real_argv(monkeypatch, answer=None):
+    """A playwright-cli stub that enforces its REAL argv contract.
+
+    A stub that accepts anything only proves this repo builds the argv it meant
+    to build. The installed CLI takes exactly one positional for `upload` — its
+    help says "one or multiple files" and names the argument "the absolute
+    paths", and the parser still rejects two before it opens a browser. Believing
+    the help shipped a broken verb, so the contract lives here now.
+    """
+    seen = []
+
+    def run(seat, *args, **kwargs):
+        seen.append(args)
+        verb, rest = args[0], list(args[1:])
+        if verb == "upload":
+            positional = [arg for arg in rest if not arg.startswith("-")]
+            if len(positional) != 1:
+                raise plc.BrowserError(
+                    f"too many arguments: expected 1, received {len(positional)}"
+                )
+        if verb == "drop":
+            if not rest or rest[0].startswith("-"):
+                raise plc.BrowserError("drop needs a target")
+            flags = rest[1:]
+            if any(flags[index] != "--path" for index in range(0, len(flags), 2)):
+                raise plc.BrowserError("drop takes files as repeated --path")
+        return answer(args) if answer else ""
+
+    monkeypatch.setattr(plc, "run", run)
+    return seen
+
+
 def test_upload_refuses_a_relative_path(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     run = commands.run_script("seat", "upload notes.txt\n")
@@ -358,24 +390,46 @@ def test_upload_refuses_a_file_that_is_not_there(monkeypatch, tmp_path):
     assert "no such file" in run.error
 
 
-def test_upload_hands_every_path_to_playwright(monkeypatch, tmp_path):
+def test_upload_hands_its_one_path_to_playwright(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
-    seen = []
-    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: seen.append(a) or "")
+    seen = _stub_real_argv(monkeypatch)
+    one = tmp_path / "a.txt"
+    one.write_text("a")
+    run = commands.run_script("seat", f"upload {one}\n")
+    assert run.ok, run.error
+    assert seen == [("upload", str(one))]
+    assert run.steps[0]["output"] == "a.txt"
+
+
+def test_upload_refuses_several_files_and_names_drop(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_real_argv(monkeypatch)
     one, two = tmp_path / "a.txt", tmp_path / "b.txt"
     one.write_text("a")
     two.write_text("b")
     run = commands.run_script("seat", f"upload {one} {two}\n")
+    # The chooser is answered once and closes, so a second upload goes nowhere.
+    # The refusal has to point at the verb that does take several.
+    assert not run.ok
+    assert "takes one file" in run.error
+    assert "drop" in run.error
+
+
+def test_upload_never_sends_an_argv_the_real_cli_refuses(monkeypatch, tmp_path):
+    """The stub enforces playwright-cli's own argv rules, not this repo's."""
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_real_argv(monkeypatch)
+    one = tmp_path / "a.txt"
+    one.write_text("a")
+    run = commands.run_script("seat", f"upload {one}\n")
     assert run.ok, run.error
-    assert seen == [("upload", str(one), str(two))]
-    assert run.steps[0]["output"] == "a.txt, b.txt"
+    assert "expected 1" not in (run.error or "")
 
 
 def test_drop_sends_one_path_flag_per_file(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     _stub_targets(monkeypatch)
-    seen = []
-    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: seen.append(a) or "")
+    seen = _stub_real_argv(monkeypatch)
     one, two = tmp_path / "a.txt", tmp_path / "b.txt"
     one.write_text("a")
     two.write_text("b")
