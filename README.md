@@ -102,6 +102,9 @@ of the page it died on.
 | `click <target>` / `fill <target> <text>` / `press <key>` / `type <text>` | interact |
 | `select <target> <value>` / `check <target>` / `uncheck <target>` / `hover <target>` | more interaction |
 | `scroll <dy>` | wheel-scroll the page |
+| `upload <path> ...` | hand files to a file chooser the page has opened |
+| `drop <target> <path> ...` | drop files onto an element, as a drag would |
+| `download <target> [secs]` | click something that downloads, and attach the file |
 | `dialog-accept [prompt]` / `dialog-dismiss` | answer a modal dialog |
 | `wait <seconds>` / `wait-for <selector> [secs]` / `wait-for-url <substr> [secs]` | let something settle |
 | `assert-text <text>` / `assert-url <substr>` | fail the run unless the page matches |
@@ -112,6 +115,18 @@ of the page it died on.
 | `open` / `close` / `save` | session lifecycle |
 | `eval <js>` | arbitrary JavaScript in the page — refused unless the seat opts in |
 | `run-code <<END … END` | Playwright statements with `page` in scope — same opt-in |
+
+`upload`, `drop` and `download` are the file verbs. They name files by their
+**absolute path on the machine holding the browser** — a relative path is refused
+rather than resolved, because the seat's own working directory is not the
+sender's. Prefer `drop` where a page accepts it: it opens no menu and no chooser,
+so there is no intermediate state to get wedged in. `upload` is for a chooser the
+page has already opened, which is a driver modal that no page JS can reach.
+
+`download` clicks its target and attaches whatever came back. playwright-cli saves
+a download itself and names it in an event, so the wait is for that event rather
+than for a file to appear; the bytes are then copied into the run's artifacts,
+because the scratch directory they land in is pruned daily.
 
 `click`, `fill`, `select`, `check`, `uncheck` and `hover` take a CSS selector
 or the element's visible text/label — quote a multi-word label

@@ -1,3 +1,5 @@
+import os
+
 import commands
 import plc
 
@@ -336,3 +338,119 @@ def _capture_code(monkeypatch, output="### Result\nok\n"):
 def _touch(path):
     open(path, "w").close()
     return path
+
+
+def _stub_targets(monkeypatch):
+    monkeypatch.setattr(commands.resolve, "click_target", lambda seat, arg: arg)
+
+
+def test_upload_refuses_a_relative_path(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    run = commands.run_script("seat", "upload notes.txt\n")
+    assert not run.ok
+    assert "not an absolute path" in run.error
+
+
+def test_upload_refuses_a_file_that_is_not_there(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    run = commands.run_script("seat", f"upload {tmp_path / 'gone.txt'}\n")
+    assert not run.ok
+    assert "no such file" in run.error
+
+
+def test_upload_hands_every_path_to_playwright(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    seen = []
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: seen.append(a) or "")
+    one, two = tmp_path / "a.txt", tmp_path / "b.txt"
+    one.write_text("a")
+    two.write_text("b")
+    run = commands.run_script("seat", f"upload {one} {two}\n")
+    assert run.ok, run.error
+    assert seen == [("upload", str(one), str(two))]
+    assert run.steps[0]["output"] == "a.txt, b.txt"
+
+
+def test_drop_sends_one_path_flag_per_file(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    seen = []
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: seen.append(a) or "")
+    one, two = tmp_path / "a.txt", tmp_path / "b.txt"
+    one.write_text("a")
+    two.write_text("b")
+    run = commands.run_script("seat", f"drop div.box {one} {two}\n")
+    assert run.ok, run.error
+    assert seen == [("drop", "div.box", "--path", str(one), "--path", str(two))]
+
+
+def test_drop_needs_a_target_and_a_file(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    run = commands.run_script("seat", "drop div.box\n")
+    assert not run.ok
+    assert "drop <target> <path>" in run.error
+
+
+def _downloaded(name):
+    return f'### Events\n- Downloaded file {name} to ".playwright-cli/{name}"\n'
+
+
+def test_download_attaches_the_file_the_click_produced(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    scratch = commands.session.scratch_dir("seat")
+    landed = os.path.join(scratch, ".playwright-cli", "chart.png")
+    os.makedirs(os.path.dirname(landed), exist_ok=True)
+    with open(landed, "wb") as handle:
+        handle.write(b"\x89PNG bytes")
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("chart.png"))
+
+    run = commands.run_script("seat", "download button.save\n")
+    assert run.ok, run.error
+    assert len(run.files) == 1
+    # Copied out of the self-pruning scratch dir, not handed over where it fell.
+    assert run.files[0] != landed
+    assert run.files[0].endswith("chart.png")
+    assert open(run.files[0], "rb").read() == b"\x89PNG bytes"
+
+
+def test_download_waits_for_an_event_that_arrives_after_the_click(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    scratch = commands.session.scratch_dir("seat")
+    landed = os.path.join(scratch, ".playwright-cli", "late.pdf")
+    os.makedirs(os.path.dirname(landed), exist_ok=True)
+    with open(landed, "w") as handle:
+        handle.write("pdf")
+
+    calls = []
+
+    def answer(seat, *a, **k):
+        calls.append(a[0])
+        # The click itself reports nothing; the event lands on a later poll.
+        return _downloaded("late.pdf") if len(calls) >= 3 else ""
+
+    monkeypatch.setattr(plc, "run", answer)
+    run = commands.run_script("seat", "download button.save 5\n")
+    assert run.ok, run.error
+    assert calls[0] == "click"
+    assert run.files[0].endswith("late.pdf")
+
+
+def test_download_fails_when_nothing_downloads(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: "")
+    run = commands.run_script("seat", "download button.save 1\n")
+    assert not run.ok
+    assert "produced no download" in run.error
+
+
+def test_download_fails_when_the_named_file_is_missing(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+    _stub_targets(monkeypatch)
+    monkeypatch.setattr(plc, "run", lambda seat, *a, **k: _downloaded("ghost.bin"))
+    run = commands.run_script("seat", "download button.save\n")
+    assert not run.ok
+    assert "which is not there" in run.error
