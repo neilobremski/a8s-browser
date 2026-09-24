@@ -158,8 +158,8 @@ def evaluate(seat, expression, timeout=30):
     return result_of(run(seat, "eval", expression, timeout=timeout))
 
 
-def evaluate_json(seat, expression, timeout=30):
-    payload = evaluate(seat, f"JSON.stringify({expression})", timeout=timeout)
+def parse_json(payload):
+    """A JSON.stringify result as the CLI reports it — sometimes still escaped."""
     try:
         return json.loads(payload)
     except json.JSONDecodeError:
@@ -167,6 +167,10 @@ def evaluate_json(seat, expression, timeout=30):
             return json.loads(payload.encode().decode("unicode_escape"))
         except (json.JSONDecodeError, UnicodeDecodeError) as err:
             raise BrowserError(f"expected JSON from the page, got {payload[:200]!r}") from err
+
+
+def evaluate_json(seat, expression, timeout=30):
+    return parse_json(evaluate(seat, f"JSON.stringify({expression})", timeout=timeout))
 
 
 def run_code(seat, body, timeout=60):

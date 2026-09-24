@@ -219,6 +219,7 @@ def _launch_chrome(seat):
             f"--remote-debugging-port={cdp_port(seat)}",
             "--no-first-run",
             "--no-default-browser-check",
+            "--disable-backgrounding-occluded-windows",
             "about:blank",
         ],
         stdout=subprocess.DEVNULL,
@@ -299,26 +300,74 @@ def close_browser(seat):
         time.sleep(0.25)
 
 
+# Asks CDP which window holds the driven page. A page no window holds is the
+# genuine zero-window Chrome; visibilityState cannot tell that apart from a
+# window that is merely covered or minimised, which also read "hidden".
+_WINDOW_PROBE = (
+    "const s = await page.context().newCDPSession(page);"
+    " try {"
+    " let w = null;"
+    " try { w = await s.send('Browser.getWindowForTarget'); }"
+    " catch (e) { if (!/window not found/i.test(e.message)) throw e; }"
+    " return JSON.stringify({url: page.url(),"
+    " window: w && w.windowId, state: w && w.bounds.windowState});"
+    " } finally { await s.detach(); }"
+)
+
+BLANK_URLS = ("", "about:blank")
+
+
+def _window_of_page(seat):
+    return plc.parse_json(plc.result_of(plc.run_code(seat, _WINDOW_PROBE, timeout=15)))
+
+
+def _unminimise(seat, window_id):
+    plc.run_code(
+        seat,
+        "const s = await page.context().newCDPSession(page);"
+        f" try {{ await s.send('Browser.setWindowBounds', {{windowId: {int(window_id)},"
+        " bounds: {windowState: 'normal'}}); } finally { await s.detach(); }",
+        timeout=15,
+    )
+
+
+def _restart_browser(seat, url):
+    """Cycle Chrome and land back on `url`, so a restart never moves the caller."""
+    close_browser(seat)
+    open_browser(seat)
+    if url not in BLANK_URLS:
+        try:
+            plc.run(seat, "goto", url, timeout=60)
+        except plc.BrowserError as exc:
+            raise plc.BrowserError(
+                f"restarted Chrome but could not return to {url}: {exc}"
+            ) from exc
+
+
 def ensure_running(seat):
-    """Open the browser, cycling it when Chrome has no visible window.
+    """Open the browser, and make sure the driven page sits in a window.
 
-    A zero-window Chrome reports visibilityState "hidden": pages still load,
-    but out-of-process iframes take no input and clicks silently no-op.
+    A page no window holds takes no input in its out-of-process iframes —
+    clicks silently no-op — so that Chrome is cycled, and the page it was on
+    is reopened. A minimised window is only restored, and a window behind
+    other windows is left alone: Chrome is launched with
+    --disable-backgrounding-occluded-windows, so its pages stay visible.
 
-    A session that is listed but refuses eval is busy, not dead — an open
-    dialog blocks page evaluation — so the probe's failure falls through to
-    the verb, which either handles the modal state or reports the real error.
+    A session that is listed but refuses the probe is busy, not dead — an open
+    dialog blocks the driver — so the failure falls through to the verb, which
+    either handles the modal state or reports the real error.
     """
     if not plc.is_open(seat):
         open_browser(seat)
         return
     try:
-        visible = plc.evaluate(seat, "document.visibilityState")
+        page = _window_of_page(seat)
     except plc.BrowserError:
         return
-    if visible == "hidden":
-        close_browser(seat)
-        open_browser(seat)
+    if page.get("window") is None:
+        _restart_browser(seat, page.get("url") or "")
+    elif page.get("state") == "minimized":
+        _unminimise(seat, page["window"])
 
 
 def save_state(seat):

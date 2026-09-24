@@ -61,3 +61,109 @@ def test_open_cleans_up_chrome_when_attach_fails(monkeypatch, tmp_path):
     except session.plc.BrowserError:
         pass
     assert reaped == ["seat"]
+
+
+class FakeSeat:
+    """A seat's Chrome as the plc layer sees it: one driven page, maybe in a window."""
+
+    def __init__(self, monkeypatch, url, window_state="normal", visibility="visible"):
+        self.url = url
+        self.window_state = window_state
+        self.visibility = visibility
+        self.calls = []
+        monkeypatch.setattr(session.plc, "is_open", lambda seat: True)
+        monkeypatch.setattr(session.plc, "evaluate", self.evaluate)
+        monkeypatch.setattr(session.plc, "run_code", self.run_code)
+        monkeypatch.setattr(session.plc, "run", self.run)
+        monkeypatch.setattr(session, "close_browser", lambda seat: self.restart("close"))
+        monkeypatch.setattr(session, "open_browser", lambda seat: self.restart("open"))
+
+    def restart(self, step):
+        self.calls.append(step)
+        if step == "open":
+            self.url, self.window_state, self.visibility = "about:blank", "normal", "visible"
+
+    def evaluate(self, seat, expression, timeout=30):
+        return self.visibility if "visibilityState" in expression else self.url
+
+    def run_code(self, seat, body, timeout=60):
+        if "setWindowBounds" in body:
+            self.calls.append("unminimise")
+            self.window_state = "normal"
+            return "### Result\nundefined"
+        window = "null" if self.window_state is None else "7"
+        state = "null" if self.window_state is None else f'\\"{self.window_state}\\"'
+        return (
+            f'### Result\n"{{\\"url\\":\\"{self.url}\\",'
+            f'\\"window\\":{window},\\"state\\":{state}}}"'
+        )
+
+    def run(self, seat, *args, timeout=30):
+        self.calls.append(" ".join(args))
+        if args[0] == "goto":
+            self.url = args[1]
+        return ""
+
+
+def test_a_window_behind_other_windows_keeps_its_chrome_and_its_page(monkeypatch):
+    """macOS reports an occluded window's page as hidden; that is not a dead browser."""
+    seat = FakeSeat(monkeypatch, "https://example.com/", visibility="hidden")
+    session.ensure_running("seat")
+    assert seat.calls == []
+    assert seat.url == "https://example.com/"
+
+
+def test_a_minimised_window_is_restored_not_restarted(monkeypatch):
+    seat = FakeSeat(
+        monkeypatch, "https://example.com/", window_state="minimized", visibility="hidden"
+    )
+    session.ensure_running("seat")
+    assert seat.calls == ["unminimise"]
+    assert seat.url == "https://example.com/"
+
+
+def test_a_page_no_window_holds_is_restarted_back_onto_its_url(monkeypatch):
+    seat = FakeSeat(monkeypatch, "https://example.com/", window_state=None, visibility="hidden")
+    session.ensure_running("seat")
+    assert seat.calls == ["close", "open", "goto https://example.com/"]
+    assert seat.url == "https://example.com/"
+
+
+def test_a_restart_from_a_blank_page_navigates_nowhere(monkeypatch):
+    seat = FakeSeat(monkeypatch, "about:blank", window_state=None, visibility="hidden")
+    session.ensure_running("seat")
+    assert seat.calls == ["close", "open"]
+
+
+def test_a_restart_that_cannot_return_names_the_page_it_lost(monkeypatch):
+    seat = FakeSeat(monkeypatch, "https://example.com/", window_state=None, visibility="hidden")
+    def refuse(seat_name, *args, timeout=30):
+        raise session.plc.BrowserError("net::ERR_NAME_NOT_RESOLVED")
+    monkeypatch.setattr(session.plc, "run", refuse)
+    try:
+        session.ensure_running("seat")
+    except session.plc.BrowserError as exc:
+        assert "https://example.com/" in str(exc)
+    else:
+        raise AssertionError("a lost page must not pass silently")
+    assert seat.calls == ["close", "open"]
+
+
+def test_a_probe_the_driver_refuses_leaves_the_browser_alone(monkeypatch):
+    """An open dialog blocks the driver; that seat is busy, not dead."""
+    seat = FakeSeat(monkeypatch, "https://example.com/", visibility="hidden")
+    def busy(*a, **k):
+        raise session.plc.BrowserError("does not handle the modal state")
+    monkeypatch.setattr(session.plc, "run_code", busy)
+    monkeypatch.setattr(session.plc, "evaluate", busy)
+    session.ensure_running("seat")
+    assert seat.calls == []
+
+
+def test_chrome_launches_with_occluded_windows_kept_visible(monkeypatch, tmp_path):
+    monkeypatch.setenv("A8S_BROWSER_HOME", str(tmp_path))
+    monkeypatch.setenv("A8S_BROWSER_CHROME", "/bin/chrome")
+    launched = []
+    monkeypatch.setattr(session.subprocess, "Popen", lambda cmd, **k: launched.append(cmd))
+    session._launch_chrome("seat")
+    assert "--disable-backgrounding-occluded-windows" in launched[0]

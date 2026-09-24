@@ -87,6 +87,12 @@ seat's playwright daemon. A seat never leaves a stray Chrome in the dock —
 including a browser wedged behind a modal dialog or one whose playwright
 session has already died.
 
+The seat's window can sit behind other windows or be minimised; the page stays
+where it is. Chrome is launched with `--disable-backgrounding-occluded-windows`,
+so a covered page keeps running as a visible one, and a minimised window is
+restored before the next command. Chrome is restarted only when the driven page
+has no window at all, and the restart navigates back to the page it was on.
+
 ## Command vocabulary
 
 One command per line. A run stops at the first failure and attaches a snapshot

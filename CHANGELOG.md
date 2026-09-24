@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- A seat keeps its page when its window is behind other windows or minimised. Every command checked `document.visibilityState` and restarted Chrome when it read `hidden`, to catch a Chrome with no window. On macOS a covered or minimised window also reads `hidden`, so a seat whose window sat behind other windows lost its page on every command and landed on `about:blank`.
+- Chrome is launched with `--disable-backgrounding-occluded-windows`, so a covered page stays `visible` to itself. A minimised window still reads `hidden` with that flag, so it is restored to a normal window before the command runs. That brings it back without taking focus.
+- The restart test asks CDP for the window that holds the driven page (`Browser.getWindowForTarget`). Chrome is restarted only when there is no such window.
+- A restart navigates back to the page it was on. A restart that cannot return fails the command and names the lost URL.
 ## 0.3.0
 
 - File verbs, so a seat can carry files as well as text. `upload <path>` hands one file to a chooser the page has already opened, which is a driver-level modal no page JS can reach — one file, because a chooser is answered once and then closes, so `drop` is the verb for several at a time. `drop <target> <path> ...` drops them onto an element as a drag would, which opens no menu and no chooser and is the one to prefer where a page accepts it. `download <target> [secs]` clicks something that downloads and attaches what came back.
