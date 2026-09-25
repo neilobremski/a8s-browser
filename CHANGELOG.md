@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- `click`/`fill`/etc. resolve a text target after normalising quote and apostrophe confusables (curly vs straight `'`/`"`) when the literal, case-insensitive match finds nothing. A chat page renders a curly apostrophe; an agent types a straight one; the two now resolve to the same element. An exact literal match still wins first, so a page carrying both forms resolves to the one actually typed.
+- When nothing visible matches at all, the error now names the closest visible candidate by a bounded edit-distance search, so a one-character miss (a quote style, a typo) is visible in the message instead of sending the operator down a "display crashed" path.
+- The normalisation pool no longer loses candidates. `click` on a plain `<button>` (not `cursor: pointer`) kept it out of the normalisation/hint pool whenever the literal match fell back to the pointer-cursor scan, which replaced the whole pool instead of adding to it. `fill` kept only a control's first label (aria-label, `label[for]`, wrapping `<label>`, placeholder), so a query matching a later label found nothing once the literal pass missed. Both verbs now carry every candidate label into normalisation, and a control matched by more than one label collapses to a single candidate instead of reading as an ambiguous multi-element pick.
+- `click`'s normalised matching no longer drops a matching ancestor for sharing a pool with a non-matching descendant. A child that inherits `cursor: pointer` from its ancestor (an icon `<span>`, a wrapped word) landed in the same candidate pool, and a single pass of `dropAncestors` over that whole pool removed the ancestor regardless of whether the child's own text matched anything — so `<button>Owner’s <span>page</span></button>` lost the button entirely once its literal apostrophe missed. `click` now computes its normalised-exact and normalised-substring tiers in-page, each with its own ancestor drop, so an ancestor is suppressed only when a descendant also matches that same tier — the case `dropAncestors` exists for.
+
 ## 0.3.1
 
 - A seat keeps its page when its window is behind other windows or minimised. Every command checked `document.visibilityState` and restarted Chrome when it read `hidden`, to catch a Chrome with no window. On macOS a covered or minimised window also reads `hidden`, so a seat whose window sat behind other windows lost its page on every command and landed on `about:blank`.
