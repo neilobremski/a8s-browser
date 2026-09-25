@@ -92,15 +92,20 @@ const gather = (pool) => {
   return {
     exact: dropAncestors(vis.filter((el) => norm(el.textContent).toLowerCase() === target)),
     sub: dropAncestors(vis.filter((el) => norm(el.textContent).toLowerCase().includes(target))),
-    all: dropAncestors(vis),
+    all: vis,
   };
 };
-let m = gather(Array.from(document.querySelectorAll(SEL)));
+const semantic = gather(Array.from(document.querySelectorAll(SEL)));
+let m = semantic;
+let pool = semantic.all;
 if (m.exact.length === 0 && m.sub.length === 0) {
   const pointer = Array.from(document.querySelectorAll('body *')).filter((el) => window.getComputedStyle(el).cursor === 'pointer');
-  m = gather(pointer);
+  const byCursor = gather(pointer);
+  m = byCursor;
+  pool = Array.from(new Set([...semantic.all, ...byCursor.all]));
 }
-return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: m.exact.map(describe), substring: m.sub.map(describe), candidates: m.all.map(describe) };
+const candidates = dropAncestors(pool);
+return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: m.exact.map(describe), substring: m.sub.map(describe), candidates: candidates.map(describe) };
 """
 
 FILL_JS = r"""
@@ -131,8 +136,13 @@ const withLabel = Array.from(document.querySelectorAll(FILLABLE)).filter(isVisib
 const mk = (x) => ({ tag: x.el.tagName.toLowerCase(), text: x.label, selector: bestSelector(x.el) });
 const exact = withLabel.map((x) => ({ ...x, label: x.labels.find((label) => label.toLowerCase() === target) })).filter((x) => x.label);
 const sub = withLabel.map((x) => ({ ...x, label: x.labels.find((label) => label.toLowerCase().includes(target)) })).filter((x) => x.label);
-const all = withLabel.map((x) => ({ ...x, label: x.labels[0] }));
-return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: exact.map(mk), substring: sub.map(mk), candidates: all.map(mk) };
+const candidates = [];
+withLabel.forEach((x) => {
+  const selector = bestSelector(x.el);
+  const tag = x.el.tagName.toLowerCase();
+  x.labels.forEach((label) => candidates.push({ tag, text: label, selector }));
+});
+return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: exact.map(mk), substring: sub.map(mk), candidates };
 """
 
 
@@ -141,13 +151,27 @@ def _classify(seat, argument, body_js):
     return evaluate_json(seat, expression)
 
 
+def _dedupe_by_selector(candidates):
+    """One entry per control.
+
+    A control can carry several labels (fill) or sit in more than one
+    candidate pool (click's semantic/pointer union), and several of its texts
+    can match the same query — that is one match, not several, so ambiguity
+    is judged on distinct selectors, not on how many texts matched.
+    """
+    seen = {}
+    for candidate in candidates:
+        seen.setdefault(candidate["selector"], candidate)
+    return list(seen.values())
+
+
 def _normalized_matches(argument, candidates):
     """Exact-after-normalisation first, substring-after-normalisation second."""
     target = _normalize(argument)
-    exact = [c for c in candidates if _normalize(c["text"]) == target]
+    exact = _dedupe_by_selector([c for c in candidates if _normalize(c["text"]) == target])
     if exact:
         return exact
-    return [c for c in candidates if target in _normalize(c["text"])]
+    return _dedupe_by_selector([c for c in candidates if target in _normalize(c["text"])])
 
 
 def _closest_hint(argument, candidates):

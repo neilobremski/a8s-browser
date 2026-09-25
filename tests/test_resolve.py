@@ -133,3 +133,89 @@ def test_exact_match_wins_over_a_normalised_one_when_both_are_visible(monkeypatc
         ],
     ))
     assert resolve.click_target("seat", "Mrs. Example's class") == "#straight"
+
+
+# R1 (PR #9 review): a <button> lives in the semantic pool (SEL), not the
+# cursor:pointer pool. On a literal miss the old code replaced the whole
+# candidate set with the pointer-only pool, so a plain button dropped out of
+# normalisation and the near-miss hint entirely, even though it was visible
+# the whole time. `candidates` must carry the semantic pool through a pointer
+# fallback.
+
+
+def test_button_in_the_semantic_pool_survives_a_pointer_fallback_straight_typed(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "button", "text": "Owner\u2019s page", "selector": "#target"},
+        ],
+    ))
+    assert resolve.click_target("seat", "Owner's page") == "#target"
+
+
+def test_button_in_the_semantic_pool_survives_a_pointer_fallback_curly_typed(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "button", "text": "Owner's page", "selector": "#target"},
+        ],
+    ))
+    assert resolve.click_target("seat", "Owner\u2019s page") == "#target"
+
+
+# R2 (PR #9 review): a fillable control can carry several labels (aria-label,
+# label[for], a wrapping <label>, a placeholder). The old code kept only the
+# first one in `candidates`, so a query that only matched a later label found
+# nothing once literal matching failed. All labels must reach normalisation,
+# and matching by more than one of a control's labels must still count as one
+# control, not an ambiguous pick.
+
+
+def test_fill_matches_by_a_later_label_once_normalised_straight_typed(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "input", "text": "Account holder", "selector": "#target"},
+            {"tag": "input", "text": "Owner\u2019s name", "selector": "#target"},
+        ],
+    ))
+    assert resolve.fill_target("seat", "Owner's name") == "#target"
+
+
+def test_fill_matches_by_a_later_label_once_normalised_curly_typed(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "input", "text": "Account holder", "selector": "#target"},
+            {"tag": "input", "text": "Owner's name", "selector": "#target"},
+        ],
+    ))
+    assert resolve.fill_target("seat", "Owner\u2019s name") == "#target"
+
+
+def test_two_labels_matching_the_same_control_is_one_match_not_two(monkeypatch):
+    # Both "Owner's name" and "Owner's account" contain "owner", so a
+    # substring query against either normalised label resolves the same
+    # control \u2014 that must collapse to a single candidate, not read as
+    # "2 elements match" for what is in fact one input.
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "input", "text": "Owner's name", "selector": "#target"},
+            {"tag": "input", "text": "Owner's account", "selector": "#target"},
+        ],
+    ))
+    assert resolve.fill_target("seat", "owner") == "#target"
+
+
+def test_normalised_exact_beats_normalised_substring(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "a", "text": "Owner\u2019s page", "selector": "#exact"},
+            {"tag": "a", "text": "Owner\u2019s page and more", "selector": "#sub"},
+        ],
+    ))
+    assert resolve.click_target("seat", "Owner's page") == "#exact"
+
+
+def test_css_selector_resolution_is_untouched_by_normalisation(monkeypatch):
+    _page(monkeypatch, _verdict(
+        selectorValid=True, selectorCount=1, selectorVisibleCount=1, selectorTarget="#login",
+        candidates=[{"tag": "button", "text": "Owner\u2019s page", "selector": "#other"}],
+    ))
+    assert resolve.click_target("seat", "#login") == "#login"

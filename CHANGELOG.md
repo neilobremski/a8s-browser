@@ -4,6 +4,7 @@
 
 - `click`/`fill`/etc. resolve a text target after normalising quote and apostrophe confusables (curly vs straight `'`/`"`) when the literal, case-insensitive match finds nothing. A chat page renders a curly apostrophe; an agent types a straight one; the two now resolve to the same element. An exact literal match still wins first, so a page carrying both forms resolves to the one actually typed.
 - When nothing visible matches at all, the error now names the closest visible candidate by a bounded edit-distance search, so a one-character miss (a quote style, a typo) is visible in the message instead of sending the operator down a "display crashed" path.
+- The normalisation pool no longer loses candidates. `click` on a plain `<button>` (not `cursor: pointer`) kept it out of the normalisation/hint pool whenever the literal match fell back to the pointer-cursor scan, which replaced the whole pool instead of adding to it. `fill` kept only a control's first label (aria-label, `label[for]`, wrapping `<label>`, placeholder), so a query matching a later label found nothing once the literal pass missed. Both verbs now carry every candidate label into normalisation, and a control matched by more than one label collapses to a single candidate instead of reading as an ambiguous multi-element pick.
 
 ## 0.3.1
 
