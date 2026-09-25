@@ -38,6 +38,9 @@ def _normalize(text):
 
 HELPERS_JS = r"""
 const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+const QUOTE_FOLD = { '\u2018': "'", '\u2019': "'", '\u201A': "'", '\u2032': "'", '\u201C': '"', '\u201D': '"', '\u201E': '"', '\u2033': '"' };
+const foldQuotes = (s) => (s || '').replace(/[\u2018\u2019\u201A\u2032\u201C\u201D\u201E\u2033]/g, (ch) => QUOTE_FOLD[ch]);
+const normalize = (s) => foldQuotes(s).normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
 const isVisible = (el) => {
   const r = el.getBoundingClientRect();
   if (r.width === 0 && r.height === 0) return false;
@@ -85,13 +88,15 @@ try {
   selectorTarget = actionable.length ? bestSelector(actionable[0]) : '';
 } catch (e) { selectorValid = false; }
 const target = norm(arg).toLowerCase();
+const normTarget = normalize(arg);
 const SEL = 'button, a, [role="button"], [role="link"], [role="tab"], [role="menuitem"], input[type="button"], input[type="submit"], label, [onclick]';
 const describe = (el) => ({ tag: el.tagName.toLowerCase(), text: norm(el.textContent), selector: bestSelector(el) });
+const tier = (vis, predicate) => dropAncestors(vis.filter(predicate));
 const gather = (pool) => {
   const vis = pool.filter(isVisible);
   return {
-    exact: dropAncestors(vis.filter((el) => norm(el.textContent).toLowerCase() === target)),
-    sub: dropAncestors(vis.filter((el) => norm(el.textContent).toLowerCase().includes(target))),
+    exact: tier(vis, (el) => norm(el.textContent).toLowerCase() === target),
+    sub: tier(vis, (el) => norm(el.textContent).toLowerCase().includes(target)),
     all: vis,
   };
 };
@@ -104,8 +109,19 @@ if (m.exact.length === 0 && m.sub.length === 0) {
   m = byCursor;
   pool = Array.from(new Set([...semantic.all, ...byCursor.all]));
 }
-const candidates = dropAncestors(pool);
-return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: m.exact.map(describe), substring: m.sub.map(describe), candidates: candidates.map(describe) };
+// The pool stays whole here — a descendant that inherits cursor:pointer, or
+// carries only part of an ancestor's text (an icon span, a wrapped word),
+// must not delete a still-matching ancestor before the tier is known.
+// dropAncestors runs per tier, inside `tier()`, once matches are known — an
+// ancestor is suppressed only when a descendant ALSO matches that tier.
+const normExact = tier(pool, (el) => normalize(el.textContent) === normTarget);
+const normSub = tier(pool, (el) => normalize(el.textContent).includes(normTarget));
+return {
+  selectorValid, selectorCount, selectorVisibleCount, selectorTarget,
+  exact: m.exact.map(describe), substring: m.sub.map(describe),
+  normExact: normExact.map(describe), normSub: normSub.map(describe),
+  candidates: pool.map(describe),
+};
 """
 
 FILL_JS = r"""
@@ -180,11 +196,26 @@ def _closest_hint(argument, candidates):
     return f"; closest: {match[0]!r}" if match else ""
 
 
+def _normalized_tier(argument, verdict):
+    """The normalised-match candidates, however this verb computed them.
+
+    click resolves its own normalised tiers in-page (normExact/normSub),
+    tier by tier, so an ancestor is dropped only when a descendant matches
+    that same tier — a plain dropAncestors over the raw pool would delete a
+    matching ancestor for holding only part of the text (an icon, a wrapped
+    word). fill has no such ancestor problem — a label is not a DOM ancestor
+    of its control — so it still normalises here, over the flat pool.
+    """
+    if "normExact" in verdict:
+        return verdict["normExact"] or verdict["normSub"]
+    return _normalized_matches(argument, verdict.get("candidates", []))
+
+
 def _pick(argument, verdict, noun):
     """One match acts; zero or many is an error naming what to do next."""
     candidates = verdict["exact"] or verdict["substring"]
     if not candidates:
-        candidates = _normalized_matches(argument, verdict.get("candidates", []))
+        candidates = _normalized_tier(argument, verdict)
     if len(candidates) == 1:
         return candidates[0]["selector"]
     if not candidates:
