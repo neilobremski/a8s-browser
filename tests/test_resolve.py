@@ -16,6 +16,7 @@ def _verdict(**overrides):
         "selectorTarget": "",
         "exact": [],
         "substring": [],
+        "candidates": [],
     }
     base.update(overrides)
     return base
@@ -71,3 +72,64 @@ def test_fill_resolves_by_label(monkeypatch):
         exact=[{"tag": "input", "text": "Password", "selector": "#pw"}],
     ))
     assert resolve.fill_target("seat", "Password") == "#pw"
+
+
+def test_straight_apostrophe_typed_matches_a_curly_one_rendered(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "a", "text": "Mrs. Example\u2019s class", "selector": "#c1"},
+        ],
+    ))
+    assert resolve.click_target("seat", "Mrs. Example's class") == "#c1"
+
+
+def test_curly_apostrophe_typed_matches_a_straight_one_rendered(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "a", "text": "Mrs. Example's class", "selector": "#c1"},
+        ],
+    ))
+    assert resolve.click_target("seat", "Mrs. Example\u2019s class") == "#c1"
+
+
+def test_curly_double_quote_typed_matches_a_straight_one_rendered(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "span", "text": 'the "big" one', "selector": "#c2"},
+        ],
+    ))
+    assert resolve.click_target("seat", "the \u201cbig\u201d one") == "#c2"
+
+
+def test_straight_double_quote_typed_matches_a_curly_one_rendered(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "span", "text": "the \u201cbig\u201d one", "selector": "#c2"},
+        ],
+    ))
+    assert resolve.click_target("seat", 'the "big" one') == "#c2"
+
+
+def test_no_match_names_the_closest_visible_candidate(monkeypatch):
+    _page(monkeypatch, _verdict(
+        candidates=[
+            {"tag": "a", "text": "Mrs. Example's class", "selector": "#c1"},
+        ],
+    ))
+    with pytest.raises(plc.BrowserError) as raised:
+        resolve.click_target("seat", "Mrs. Ecksample's class")
+    message = str(raised.value)
+    assert "nothing visible matching" in message
+    assert "closest:" in message
+    assert "Mrs. Example's class" in message
+
+
+def test_exact_match_wins_over_a_normalised_one_when_both_are_visible(monkeypatch):
+    _page(monkeypatch, _verdict(
+        exact=[{"tag": "a", "text": "Mrs. Example's class", "selector": "#straight"}],
+        candidates=[
+            {"tag": "a", "text": "Mrs. Example's class", "selector": "#straight"},
+            {"tag": "a", "text": "Mrs. Example\u2019s class", "selector": "#curly"},
+        ],
+    ))
+    assert resolve.click_target("seat", "Mrs. Example's class") == "#straight"

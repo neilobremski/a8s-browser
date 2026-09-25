@@ -6,8 +6,35 @@ classifies the argument, and when it is text rather than a selector it returns
 the matching elements, each with the simplest selector that uniquely identifies
 it, so an ambiguous instruction comes back as a list to choose from instead of
 a guess.
+
+Text matching runs two tiers. The page-side pass compares literal text first
+(case-insensitive), because that is the common case and needs no Python round
+trip. When that finds nothing, the second tier compares after normalising
+quote and apostrophe confusables — a chat page renders a curly apostrophe, an
+agent types a straight one, and the two should mean the same target.
 """
+import re
+import unicodedata
+from difflib import get_close_matches
+
 from plc import BrowserError, evaluate_json, js_string
+
+_QUOTE_TRANSLATION = str.maketrans({
+    "\N{LEFT SINGLE QUOTATION MARK}": "'",
+    "\N{RIGHT SINGLE QUOTATION MARK}": "'",
+    "\N{SINGLE LOW-9 QUOTATION MARK}": "'",
+    "\N{PRIME}": "'",
+    "\N{LEFT DOUBLE QUOTATION MARK}": '"',
+    "\N{RIGHT DOUBLE QUOTATION MARK}": '"',
+    "\N{DOUBLE LOW-9 QUOTATION MARK}": '"',
+    "\N{DOUBLE PRIME}": '"',
+})
+
+
+def _normalize(text):
+    """Fold quote confusables, apply NFKC, and collapse whitespace."""
+    text = unicodedata.normalize("NFKC", (text or "").translate(_QUOTE_TRANSLATION))
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 HELPERS_JS = r"""
 const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
@@ -65,6 +92,7 @@ const gather = (pool) => {
   return {
     exact: dropAncestors(vis.filter((el) => norm(el.textContent).toLowerCase() === target)),
     sub: dropAncestors(vis.filter((el) => norm(el.textContent).toLowerCase().includes(target))),
+    all: dropAncestors(vis),
   };
 };
 let m = gather(Array.from(document.querySelectorAll(SEL)));
@@ -72,7 +100,7 @@ if (m.exact.length === 0 && m.sub.length === 0) {
   const pointer = Array.from(document.querySelectorAll('body *')).filter((el) => window.getComputedStyle(el).cursor === 'pointer');
   m = gather(pointer);
 }
-return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: m.exact.map(describe), substring: m.sub.map(describe) };
+return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: m.exact.map(describe), substring: m.sub.map(describe), candidates: m.all.map(describe) };
 """
 
 FILL_JS = r"""
@@ -103,7 +131,8 @@ const withLabel = Array.from(document.querySelectorAll(FILLABLE)).filter(isVisib
 const mk = (x) => ({ tag: x.el.tagName.toLowerCase(), text: x.label, selector: bestSelector(x.el) });
 const exact = withLabel.map((x) => ({ ...x, label: x.labels.find((label) => label.toLowerCase() === target) })).filter((x) => x.label);
 const sub = withLabel.map((x) => ({ ...x, label: x.labels.find((label) => label.toLowerCase().includes(target)) })).filter((x) => x.label);
-return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: exact.map(mk), substring: sub.map(mk) };
+const all = withLabel.map((x) => ({ ...x, label: x.labels[0] }));
+return { selectorValid, selectorCount, selectorVisibleCount, selectorTarget, exact: exact.map(mk), substring: sub.map(mk), candidates: all.map(mk) };
 """
 
 
@@ -112,13 +141,33 @@ def _classify(seat, argument, body_js):
     return evaluate_json(seat, expression)
 
 
+def _normalized_matches(argument, candidates):
+    """Exact-after-normalisation first, substring-after-normalisation second."""
+    target = _normalize(argument)
+    exact = [c for c in candidates if _normalize(c["text"]) == target]
+    if exact:
+        return exact
+    return [c for c in candidates if target in _normalize(c["text"])]
+
+
+def _closest_hint(argument, candidates):
+    texts = [c["text"] for c in candidates if c.get("text")]
+    match = get_close_matches(argument, texts, n=1, cutoff=0.4)
+    return f"; closest: {match[0]!r}" if match else ""
+
+
 def _pick(argument, verdict, noun):
     """One match acts; zero or many is an error naming what to do next."""
     candidates = verdict["exact"] or verdict["substring"]
+    if not candidates:
+        candidates = _normalized_matches(argument, verdict.get("candidates", []))
     if len(candidates) == 1:
         return candidates[0]["selector"]
     if not candidates:
-        raise BrowserError(f"{noun}: nothing visible matching {argument!r} — try `snap`, or pass a CSS selector")
+        hint = _closest_hint(argument, verdict.get("candidates", []))
+        raise BrowserError(
+            f"{noun}: nothing visible matching {argument!r} — try `snap`, or pass a CSS selector{hint}"
+        )
     lines = [f"{noun}: {len(candidates)} elements match {argument!r} — pick one by selector:"]
     for candidate in candidates:
         text = candidate["text"][:60]

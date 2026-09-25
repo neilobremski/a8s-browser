@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- `click`/`fill`/etc. resolve a text target after normalising quote and apostrophe confusables (curly vs straight `'`/`"`) when the literal, case-insensitive match finds nothing. A chat page renders a curly apostrophe; an agent types a straight one; the two now resolve to the same element. An exact literal match still wins first, so a page carrying both forms resolves to the one actually typed.
+- When nothing visible matches at all, the error now names the closest visible candidate by a bounded edit-distance search, so a one-character miss (a quote style, a typo) is visible in the message instead of sending the operator down a "display crashed" path.
+
 ## 0.3.1
 
 - A seat keeps its page when its window is behind other windows or minimised. Every command checked `document.visibilityState` and restarted Chrome when it read `hidden`, to catch a Chrome with no window. On macOS a covered or minimised window also reads `hidden`, so a seat whose window sat behind other windows lost its page on every command and landed on `about:blank`.
