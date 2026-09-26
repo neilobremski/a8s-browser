@@ -38,6 +38,35 @@ def test_a_failure_attaches_the_page_it_died_on(monkeypatch, tmp_path):
     assert open(run.files[0]).read() == "- button 'Sign in'"
 
 
+def test_click_accepts_a_ref_from_the_last_snap(monkeypatch, tmp_path):
+    """#10, end to end: `click e5` must reach playwright-cli with the ref
+    itself as the target, not fall through to resolve's text/CSS matcher."""
+    _stub_browser(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(plc, "run", lambda *a, **k: calls.append(a) or "### Result\nok\n")
+    run = commands.run_script("seat", "click e5\n")
+    assert run.ok, run.error
+    assert ("seat", "eval", "() => true", "e5") in calls
+    assert ("seat", "click", "e5") in calls
+
+
+def test_click_reports_a_stale_ref_instead_of_nothing_visible(monkeypatch, tmp_path):
+    _stub_browser(monkeypatch, tmp_path)
+
+    def fake_run(seat, *args, **kwargs):
+        if args[0] == "eval":
+            raise plc.BrowserError(
+                "Error: Ref e5 not found in the current page snapshot. "
+                "Try capturing new snapshot."
+            )
+        raise AssertionError("click must not run once the ref fails to resolve")
+
+    monkeypatch.setattr(plc, "run", fake_run)
+    run = commands.run_script("seat", "click e5\n")
+    assert not run.ok
+    assert run.error == "ref e5 is not on the page any more — snap again"
+
+
 def test_eval_is_refused_unless_the_seat_opted_in(monkeypatch, tmp_path):
     _stub_browser(monkeypatch, tmp_path)
     run = commands.run_script("seat", "eval 1 + 1")

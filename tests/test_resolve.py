@@ -291,3 +291,75 @@ def test_css_selector_resolution_is_untouched_by_normalisation(monkeypatch):
         candidates=[{"tag": "button", "text": "Owner\u2019s page", "selector": "#other"}],
     ))
     assert resolve.click_target("seat", "#login") == "#login"
+
+
+# #10: a ref printed by `snap` (`e5`, or `f1e5` inside a frame) must be
+# accepted as a target, resolved playwright-cli's own way (an `aria-ref`
+# lookup, not our page-side text/CSS classifier) before anything else is
+# tried.
+
+
+def _fail_classify(monkeypatch):
+    """If ref handling falls through to text/CSS classification, fail loudly
+    rather than let a coincidental match hide the bug."""
+    def _boom(seat, expression):
+        raise AssertionError("a ref must not reach the text/CSS classifier")
+    monkeypatch.setattr(resolve, "evaluate_json", _boom)
+
+
+def test_a_ref_from_the_last_snap_resolves(monkeypatch):
+    _fail_classify(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        resolve.plc, "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or "### Result\ntrue\n",
+    )
+    assert resolve.click_target("seat", "e5") == "e5"
+    args, kwargs = calls[0]
+    assert args == ("seat", "eval", "() => true", "e5")
+    assert kwargs.get("timeout") == 10
+
+
+def test_a_ref_with_a_frame_prefix_resolves(monkeypatch):
+    _fail_classify(monkeypatch)
+    monkeypatch.setattr(resolve.plc, "run", lambda *a, **k: "### Result\ntrue\n")
+    assert resolve.click_target("seat", "f133e172") == "f133e172"
+    assert resolve.fill_target("seat", "f1e5") == "f1e5"
+
+
+def test_a_stale_ref_names_the_fix(monkeypatch):
+    _fail_classify(monkeypatch)
+
+    def _stale(*args, **kwargs):
+        raise plc.BrowserError(
+            "Error: Ref f133e172 not found in the current page snapshot. "
+            "Try capturing new snapshot."
+        )
+
+    monkeypatch.setattr(resolve.plc, "run", _stale)
+    with pytest.raises(plc.BrowserError) as raised:
+        resolve.click_target("seat", "f133e172")
+    message = str(raised.value)
+    assert message == "ref f133e172 is not on the page any more \u2014 snap again"
+    assert "nothing visible matching" not in message
+
+
+def test_a_playwright_error_unrelated_to_a_stale_ref_is_not_reworded(monkeypatch):
+    _fail_classify(monkeypatch)
+
+    def _boom(*args, **kwargs):
+        raise plc.BrowserError("playwright-cli timed out after 10s")
+
+    monkeypatch.setattr(resolve.plc, "run", _boom)
+    with pytest.raises(plc.BrowserError, match="timed out"):
+        resolve.click_target("seat", "e5")
+
+
+def test_text_that_merely_looks_like_a_word_is_not_mistaken_for_a_ref(monkeypatch):
+    """Only playwright-cli's own ref shape short-circuits to `_resolve_ref` \u2014
+    ordinary text and CSS selectors are untouched, including one that starts
+    with the letter e or f."""
+    _page(monkeypatch, _verdict(
+        exact=[{"tag": "button", "text": "export", "selector": "#export"}],
+    ))
+    assert resolve.click_target("seat", "export") == "#export"
