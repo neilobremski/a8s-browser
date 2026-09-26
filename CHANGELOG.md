@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- `handle` returns 0 once the reply has been sent, whether the script's own verb succeeded or failed, and whether the sender was refused. a8s treats a nonzero wake exit as "retry me" (30/120/600s, four attempts), and a retried wake ran `handle` again, which sent the same reply again — so a failing verb or a refused sender re-sent its reply up to four times and blocked every later message behind it. `_tell` now uses `check=True`, so a `tell` that could not deliver raises instead of being silently discarded, and that is the one condition `handle` still reports nonzero for.
+- `click`, `fill`, `hover`, `select`, `check` and `uncheck` accept a ref printed by `snap` (`e5`, or `f1e5` inside a frame) as a target. A ref is resolved playwright-cli's own way — an `aria-ref` lookup against its last accessibility snapshot — before any text or CSS matching is tried, so it no longer falls through to "nothing visible matching" for a target `snap` itself printed. A ref that no longer resolves fails with `ref <id> is not on the page any more — snap again`.
+
 ## 0.3.2
 
 - `click`/`fill`/etc. resolve a text target after normalising quote and apostrophe confusables (curly vs straight `'`/`"`) when the literal, case-insensitive match finds nothing. A chat page renders a curly apostrophe; an agent types a straight one; the two now resolve to the same element. An exact literal match still wins first, so a page carrying both forms resolves to the one actually typed.
