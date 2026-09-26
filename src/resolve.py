@@ -7,6 +7,12 @@ the matching elements, each with the simplest selector that uniquely identifies
 it, so an ambiguous instruction comes back as a list to choose from instead of
 a guess.
 
+A ref printed by `snap` (`e5`, or `f1e5` inside a frame) is tried before any
+of that: it names one element playwright-cli itself already knows how to find
+— the accessibility snapshot's own `aria-ref` lookup — so it is resolved that
+way and handed back as the target verbatim, never run through text or CSS
+matching.
+
 Text matching runs two tiers. The page-side pass compares literal text first
 (case-insensitive), because that is the common case and needs no Python round
 trip. When that finds nothing, the second tier compares after normalising
@@ -17,7 +23,14 @@ import re
 import unicodedata
 from difflib import get_close_matches
 
+import plc
 from plc import BrowserError, evaluate_json, js_string
+
+# playwright-cli's own shape for a ref it printed: an optional frame index
+# (`f<n>`) followed by an element index (`e<n>`) — see `targetLocators` in
+# playwright-core, which matches a target against this exact pattern before
+# treating it as a selector.
+REF_RE = re.compile(r"^(f\d+)?e\d+$")
 
 _QUOTE_TRANSLATION = str.maketrans({
     "\N{LEFT SINGLE QUOTATION MARK}": "'",
@@ -230,7 +243,30 @@ def _pick(argument, verdict, noun):
     raise BrowserError("\n".join(lines))
 
 
+def _resolve_ref(seat, ref):
+    """A ref from the last `snap` of this session, resolved playwright-cli's
+    own way: an `aria-ref` lookup against its last accessibility snapshot
+    (see `targetLocators` in playwright-core), not a page-side search.
+
+    A no-op `eval` against the ref exercises exactly that lookup without
+    clicking or filling anything — playwright-cli resolves the target the
+    same way for every verb, so confirming it here means every target-taking
+    verb gets the same clear failure for a ref that fell off the page.
+    """
+    try:
+        plc.run(seat, "eval", "() => true", ref, timeout=10)
+    except BrowserError as exc:
+        if "not found in the current page snapshot" in str(exc):
+            raise BrowserError(
+                f"ref {ref} is not on the page any more — snap again"
+            ) from exc
+        raise
+    return ref
+
+
 def _target(seat, argument, body_js, noun):
+    if REF_RE.match(argument):
+        return _resolve_ref(seat, argument)
     verdict = _classify(seat, argument, body_js)
     if verdict["selectorValid"] and verdict["selectorCount"] >= 1:
         if verdict["selectorVisibleCount"] < 1:
